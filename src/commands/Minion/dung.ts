@@ -212,7 +212,13 @@ export default class extends BotCommand {
 			);
 		}
 
-		const { item, cost } = buyable;
+		let { item, cost } = buyable;
+
+		let hasSkipper = msg.author.owns('Skipper');
+		if (hasSkipper) {
+			cost = reduceNumByPercent(cost, 15);
+		}
+
 		const balance = msg.author.settings.get(UserSettings.DungeoneeringTokens);
 		if (balance < cost) {
 			return msg.channel.send(
@@ -226,7 +232,9 @@ export default class extends BotCommand {
 		await msg.author.addItemsToBank({ [item.id]: 1 }, true);
 
 		return msg.channel.send(
-			`Successfully purchased 1x ${item.name} for ${cost.toLocaleString()} Dungeoneering tokens.`
+			`Successfully purchased 1x ${item.name} for ${cost.toLocaleString()} Dungeoneering tokens.${
+				hasSkipper ? ' 15% discount for Skipper' : ''
+			}`
 		);
 	}
 
