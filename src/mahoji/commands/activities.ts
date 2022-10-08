@@ -173,12 +173,12 @@ export const activitiesCommand: OSBMahojiCommand = {
 		{
 			type: ApplicationCommandOptionType.Subcommand,
 			name: 'charge',
-			description: 'Allows you to charge glories, or rings of wealth.',
+			description: 'Allows you to charge glories, rings of wealth, or uncharge them.',
 			options: [
 				{
 					type: ApplicationCommandOptionType.String,
 					name: 'item',
-					description: 'The item you want to want',
+					description: 'The item you want to charge or uncharge.',
 					required: true,
 					choices: [
 						{
@@ -188,13 +188,19 @@ export const activitiesCommand: OSBMahojiCommand = {
 						{
 							name: 'Ring of wealth',
 							value: 'wealth'
+						},
+						{	name: 'Amulet of glory(6)',
+							value: 'uncharge glory'
+						},
+						{	name: 'Ring of wealth(5)',
+						 	value: 'uncharge wealth'
 						}
 					]
 				},
 				{
 					type: ApplicationCommandOptionType.Number,
 					name: 'quantity',
-					description: 'The amount of inventories you want to charge.  (optional)',
+					description: 'The amount of inventories you want to charge or uncharge.  (optional)',
 					required: false,
 					min_value: 1
 				}
