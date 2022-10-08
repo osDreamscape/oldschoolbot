@@ -14,6 +14,7 @@ import { buryCommand } from '../lib/abstracted_commands/buryCommand';
 import { castCommand } from '../lib/abstracted_commands/castCommand';
 import { championsChallengeCommand } from '../lib/abstracted_commands/championsChallenge';
 import { chargeGloriesCommand } from '../lib/abstracted_commands/chargeGloriesCommand';
+import { unchargeGloriesCommand } from '../lib/abstracted_commands/unchargeGloriesCommand';
 import { chargeWealthCommand } from '../lib/abstracted_commands/chargeWealthCommand';
 import { chompyHuntClaimCommand, chompyHuntCommand } from '../lib/abstracted_commands/chompyHuntCommand';
 import { collectables, collectCommand } from '../lib/abstracted_commands/collectCommand';
@@ -191,9 +192,6 @@ export const activitiesCommand: OSBMahojiCommand = {
 						},
 						{	name: 'Amulet of glory(6)',
 							value: 'uncharge glory'
-						},
-						{	name: 'Ring of wealth(5)',
-						 	value: 'uncharge wealth'
 						}
 					]
 				},
