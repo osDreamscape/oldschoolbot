@@ -3,7 +3,7 @@ import { Bank } from 'oldschooljs';
 import { Events } from '../../lib/constants';
 import { ActivityTaskOptionsWithQuantity } from '../../lib/types/minions';
 import { handleTripFinish } from '../../lib/util/handleTripFinish';
-import { gloriesInventorySize } from '../../mahoji/lib/abstracted_commands/chargeGloriesCommand';
+import { gloriesInventorySize } from '../../mahoji/lib/abstracted_commands/unchargeGloriesCommand';
 
 export const gloryChargingTask: MinionTask = {
   type: 'GloryUncharging',
@@ -21,7 +21,6 @@ export const gloryChargingTask: MinionTask = {
 		}
 
 		const amnt = loot.amount('Amulet of glory');
-
 
 		await transactItems({
 			userID: user.id,
