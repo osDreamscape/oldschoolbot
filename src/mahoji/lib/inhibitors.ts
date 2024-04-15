@@ -12,8 +12,10 @@ import {
 import { OWNER_IDS, SupportServer } from '../../config';
 import { BLACKLISTED_GUILDS, BLACKLISTED_USERS } from '../../lib/blacklists';
 import { BadgesEnum, BitField, Channel, DISABLED_COMMANDS, minionBuyButton, PerkTier } from '../../lib/constants';
+import { perkTierCache, syncPerkTierOfUser } from '../../lib/perkTiers';
 import { CategoryFlag } from '../../lib/types';
 import { formatDuration } from '../../lib/util';
+import { minionIsBusy } from '../../lib/util/minionIsBusy';
 import { mahojiGuildSettingsFetch, untrustedGuildSettingsCache } from '../guildSettings';
 import { Cooldowns } from './Cooldowns';
 
@@ -103,7 +105,7 @@ const inhibitors: Inhibitor[] = [
 		run: async ({ user, command }) => {
 			if (!command.attributes?.requiresMinionNotBusy) return false;
 
-			if (user.minionIsBusy) {
+			if (minionIsBusy(user.id)) {
 				return { content: 'Your minion must not be busy to use this command.' };
 			}
 
@@ -149,7 +151,11 @@ const inhibitors: Inhibitor[] = [
 			if (!guild || guild.id !== SupportServer) return false;
 			if (channel.id !== Channel.General) return false;
 
-			if (member && user.perkTier() >= PerkTier.Two) {
+			let perkTier = perkTierCache.get(user.id);
+			if (!perkTier) {
+				perkTier = syncPerkTierOfUser(user);
+			}
+			if (member && perkTier >= PerkTier.Two) {
 				return false;
 			}
 

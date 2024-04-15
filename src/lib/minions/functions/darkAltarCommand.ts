@@ -8,7 +8,6 @@ import { formatDuration, hasSkillReqs } from '../../util';
 import addSubTaskToActivityTask from '../../util/addSubTaskToActivityTask';
 import { calcMaxTripLength } from '../../util/calcMaxTripLength';
 import getOSItem from '../../util/getOSItem';
-import { Favours, gotFavour } from '../data/kourendFavour';
 
 export const darkAltarRunes = {
 	soul: {
@@ -32,8 +31,8 @@ const agilityPenalty = 35;
 const mediumDiaryBoost = 20;
 
 export async function darkAltarCommand({ user, channelID, name }: { user: MUser; channelID: string; name: string }) {
-	if (!['blood', 'soul'].includes(name)) return 'Invalid rune.';
 	const stats = user.skillsAsLevels;
+	if (!['blood', 'soul'].includes(name.split(' ')[0])) return 'Invalid rune.';
 	const [hasReqs, neededReqs] = hasSkillReqs(user, {
 		mining: 38,
 		crafting: 38
@@ -41,10 +40,7 @@ export async function darkAltarCommand({ user, channelID, name }: { user: MUser;
 	if (!hasReqs) {
 		return `You can't craft Blood runes at the Dark Altar, because you don't have these required stats: ${neededReqs}.`;
 	}
-	const [hasFavour, requiredPoints] = gotFavour(user, Favours.Arceuus, 100);
-	if (!hasFavour) {
-		return `Crafting Blood/Soul runes at the Dark Altar requires ${requiredPoints}% Arceuus Favour.`;
-	}
+
 	const rune = name.toLowerCase().includes('soul') ? 'soul' : 'blood';
 	const runeData = darkAltarRunes[rune];
 
@@ -78,6 +74,7 @@ export async function darkAltarCommand({ user, channelID, name }: { user: MUser;
 
 	const maxTripLength = calcMaxTripLength(user, 'DarkAltar');
 	const quantity = Math.floor(maxTripLength / timePerRune);
+
 	await addSubTaskToActivityTask<DarkAltarOptions>({
 		userID: user.id,
 		channelID: channelID.toString(),
@@ -95,6 +92,5 @@ export async function darkAltarCommand({ user, channelID, name }: { user: MUser;
 	if (boosts.length > 0) {
 		response += `\n\n**Boosts:** ${boosts.join(', ')}.`;
 	}
-
 	return response;
 }

@@ -21,6 +21,7 @@ import { channelIsSendable, formatDuration, randomVariation } from '../../../lib
 import addSubTaskToActivityTask from '../../../lib/util/addSubTaskToActivityTask';
 import { calcMaxTripLength } from '../../../lib/util/calcMaxTripLength';
 import { updateBankSetting } from '../../../lib/util/updateBankSetting';
+import { mahojiParseNumber } from '../../mahojiSettings';
 
 const uniques = [
 	'Dexterous prayer scroll',
@@ -38,37 +39,37 @@ const uniques = [
 ];
 
 export async function coxStatsCommand(user: MUser) {
-	const [normal, cm] = await Promise.all([
-		getMinigameScore(user.id, 'raids'),
-		getMinigameScore(user.id, 'raids_challenge_mode')
+	const [minigameScores, stats] = await Promise.all([
+		user.fetchMinigames(),
+		user.fetchStats({ total_cox_points: true })
 	]);
 	let totalUniques = 0;
 	const { cl } = user;
 	for (const item of uniques) {
 		totalUniques += cl.amount(item);
 	}
-	const totalPoints = user.user.total_cox_points;
+	const totalPoints = stats.total_cox_points;
 	const { melee, range, mage, total } = calculateUserGearPercents(user);
 	const normalSolo = await calcCoxDuration([user], false);
 	const normalTeam = await calcCoxDuration(Array(2).fill(user), false);
 	const cmSolo = await calcCoxDuration([user], true);
 	const cmTeam = await calcCoxDuration(Array(2).fill(user), true);
 	return `<:Twisted_bow:403018312402862081> Chambers of Xeric <:Olmlet:324127376873357316>
-**Normal:** ${normal} KC (Solo: ${Emoji.Skull} ${(await createTeam([user], false))[0].deathChance.toFixed(1)}% ${
-		Emoji.CombatSword
-	} ${calcWhatPercent(normalSolo.reductions[user.id], normalSolo.maxUserReduction).toFixed(1)}%, Team: ${
-		Emoji.Skull
-	} ${(await createTeam(Array(2).fill(user), false))[0].deathChance.toFixed(1)}% ${
+**Normal:** ${minigameScores.raids} KC (Solo: ${Emoji.Skull} ${(await createTeam([user], false))[0].deathChance.toFixed(
+		1
+	)}% ${Emoji.CombatSword} ${calcWhatPercent(normalSolo.reductions[user.id], normalSolo.maxUserReduction).toFixed(
+		1
+	)}%, Team: ${Emoji.Skull} ${(await createTeam(Array(2).fill(user), false))[0].deathChance.toFixed(1)}% ${
 		Emoji.CombatSword
 	} ${calcWhatPercent(normalTeam.reductions[user.id], normalTeam.maxUserReduction).toFixed(1)}%)
-**Challenge Mode:** ${cm} KC (Solo: ${Emoji.Skull} ${(await createTeam([user], true))[0].deathChance.toFixed(1)}%  ${
+**Challenge Mode:** ${minigameScores.raids_challenge_mode} KC (Solo: ${Emoji.Skull} ${(
+		await createTeam([user], true)
+	)[0].deathChance.toFixed(1)}%  ${Emoji.CombatSword} ${calcWhatPercent(
+		cmSolo.reductions[user.id],
+		cmSolo.maxUserReduction
+	).toFixed(1)}%, Team: ${Emoji.Skull} ${(await createTeam(Array(2).fill(user), true))[0].deathChance.toFixed(1)}% ${
 		Emoji.CombatSword
-	} ${calcWhatPercent(cmSolo.reductions[user.id], cmSolo.maxUserReduction).toFixed(1)}%, Team: ${Emoji.Skull} ${(
-		await createTeam(Array(2).fill(user), true)
-	)[0].deathChance.toFixed(1)}% ${Emoji.CombatSword} ${calcWhatPercent(
-		cmTeam.reductions[user.id],
-		cmTeam.maxUserReduction
-	).toFixed(1)}%)
+	} ${calcWhatPercent(cmTeam.reductions[user.id], cmTeam.maxUserReduction).toFixed(1)}%)
 **Total Points:** ${totalPoints}
 **Total Uniques:** ${totalUniques} ${
 		totalUniques > 0 ? `(1 unique per ${Math.floor(totalPoints / totalUniques).toLocaleString()} pts)` : ''
@@ -83,6 +84,7 @@ export async function coxCommand(
 	channelID: string,
 	user: MUser,
 	type: 'solo' | 'mass',
+	maxSizeInput: number | undefined,
 	isChallengeMode: boolean,
 	_quantity?: number
 ) {
@@ -91,11 +93,6 @@ export async function coxCommand(
 	}
 
 	const minigameID = isChallengeMode ? 'raids_challenge_mode' : 'raids';
-
-	const userKC = await getMinigameScore(user.id, minigameID);
-	if (!isChallengeMode && userKC < 50 && type === 'solo') {
-		return 'You need at least 50 Chambers of Xeric KC before you can attempt a solo raid.';
-	}
 
 	if (isChallengeMode) {
 		const normalKC = await getMinigameScore(user.id, 'raids');
@@ -107,10 +104,12 @@ export async function coxCommand(
 		return "Your minion is busy, so you can't start a raid.";
 	}
 
+	let maxSize = mahojiParseNumber({ input: maxSizeInput, min: 2, max: 15 }) ?? 15;
+
 	const partyOptions: MakePartyOptions = {
 		leader: user,
 		minSize: 2,
-		maxSize: 15,
+		maxSize,
 		ironmanAllowed: true,
 		message: `${user.usernameOrMention} is hosting a ${
 			isChallengeMode ? '**Challenge mode** ' : ''

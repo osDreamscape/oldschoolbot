@@ -1,8 +1,8 @@
-import { Embed } from '@discordjs/builders';
+import { EmbedBuilder } from '@discordjs/builders';
+import { splitMessage } from '@oldschoolgg/toolkit';
 import {
 	AttachmentBuilder,
 	BaseMessageOptions,
-	EmbedBuilder,
 	Message,
 	PartialGroupDMChannel,
 	PermissionsBitField,
@@ -10,10 +10,10 @@ import {
 } from 'discord.js';
 import PQueue from 'p-queue';
 
+import { production } from '../../config';
 import { prisma } from '../settings/prisma';
 import { channelIsSendable } from '../util';
 import { logError } from './logError';
-import { splitMessage } from './splitMessage';
 
 export async function resolveChannel(channelID: string): Promise<WebhookClient | Message['channel'] | undefined> {
 	const channel = globalClient.channels.cache.get(channelID);
@@ -25,7 +25,7 @@ export async function resolveChannel(channelID: string): Promise<WebhookClient |
 		return new WebhookClient({ id: db.webhook_id, token: db.webhook_token });
 	}
 
-	if (!channel.permissionsFor(globalClient.user!)?.has(PermissionsBitField.Flags.ManageWebhooks)) {
+	if (!production || !channel.permissionsFor(globalClient.user!)?.has(PermissionsBitField.Flags.ManageWebhooks)) {
 		return channel;
 	}
 
@@ -59,7 +59,7 @@ export async function sendToChannelID(
 	data: {
 		content?: string;
 		image?: Buffer | AttachmentBuilder;
-		embed?: Embed | EmbedBuilder;
+		embed?: EmbedBuilder;
 		files?: BaseMessageOptions['files'];
 		components?: BaseMessageOptions['components'];
 		allowedMentions?: BaseMessageOptions['allowedMentions'];
@@ -108,7 +108,7 @@ export async function sendToChannelID(
 			});
 		}
 	}
-	queue.add(queuedFn);
+	return queue.add(queuedFn);
 }
 
 async function sendToChannelOrWebhook(channel: WebhookClient | Message['channel'], input: BaseMessageOptions) {

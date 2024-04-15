@@ -32,6 +32,7 @@ export const bareMinStats: Skills = {
 };
 
 export const SANGUINESTI_CHARGES_PER_COX = 150;
+export const SHADOW_CHARGES_PER_COX = 130;
 export const TENTACLE_CHARGES_PER_COX = 200;
 
 export function hasMinRaidsRequirements(user: MUser) {
@@ -55,6 +56,8 @@ export async function createTeam(
 	cm: boolean
 ): Promise<Array<{ deaths: number; deathChance: number } & ChambersOfXericOptions['team'][0]>> {
 	let res = [];
+	const isSolo = users.length === 1;
+
 	for (const u of users) {
 		let points = 24_000;
 		const { total } = calculateUserGearPercents(u);
@@ -93,6 +96,10 @@ export async function createTeam(
 
 		if (cm && kc > 20) {
 			points += 5000;
+		}
+
+		if (isSolo && kc < 50) {
+			deathChance += Math.max(30 - kc, 0);
 		}
 
 		let deaths = 0;
@@ -168,7 +175,7 @@ export const maxMageGear = constructGearSetup({
 	feet: 'Eternal boots',
 	weapon: 'Harmonised nightmare staff',
 	shield: 'Arcane spirit shield',
-	ring: 'Seers ring(i)'
+	ring: 'Magus ring'
 });
 const maxMage = new Gear(maxMageGear);
 
@@ -181,7 +188,7 @@ export const maxRangeGear = constructGearSetup({
 	legs: 'Armadyl chainskirt',
 	feet: 'Pegasian boots',
 	'2h': 'Twisted bow',
-	ring: 'Archers ring(i)',
+	ring: 'Venator ring',
 	ammo: 'Dragon arrow'
 });
 const maxRange = new Gear(maxRangeGear);
@@ -196,7 +203,7 @@ export const maxMeleeGear = constructGearSetup({
 	feet: 'Primordial boots',
 	weapon: "Inquisitor's mace",
 	shield: 'Avernic defender',
-	ring: 'Berserker ring(i)'
+	ring: 'Ultor ring'
 });
 const maxMelee = new Gear(maxMeleeGear);
 
@@ -256,10 +263,10 @@ export async function checkCoxTeam(users: MUser[], cm: boolean, quantity: number
 	for (const user of users) {
 		const { total } = calculateUserGearPercents(user);
 		if (total < 20) {
-			return "Your gear is terrible! You do not stand a chance in the Chamber's of Xeric.";
+			return 'Your gear is terrible! You do not stand a chance in the Chambers of Xeric.';
 		}
 		if (!hasMinRaidsRequirements(user)) {
-			return `${user.usernameOrMention} doesn't meet the stat requirements to do the Chamber's of Xeric.`;
+			return `${user.usernameOrMention} doesn't meet the stat requirements to do the Chambers of Xeric.`;
 		}
 		if (cm) {
 			if (users.length === 1 && !user.hasEquippedOrInBank('Twisted bow')) {
@@ -301,13 +308,24 @@ export async function checkCoxTeam(users: MUser[], cm: boolean, quantity: number
 				return sangResult.userMessage;
 			}
 		}
+		if (user.gear.mage.hasEquipped("Tumeken's shadow")) {
+			const shadowResult = checkUserCanUseDegradeableItem({
+				item: getOSItem("Tumeken's shadow"),
+				chargesToDegrade: SHADOW_CHARGES_PER_COX,
+				user
+			});
+			if (!shadowResult.hasEnough) {
+				return shadowResult.userMessage;
+			}
+		}
 	}
 
 	return null;
 }
 
-async function kcEffectiveness(u: MUser, challengeMode: boolean, isSolo: boolean) {
-	const kc = await getMinigameScore(u.id, challengeMode ? 'raids_challenge_mode' : 'raids');
+function kcEffectiveness(challengeMode: boolean, isSolo: boolean, normalKC: number, cmKC: number) {
+	const kc = challengeMode ? cmKC : normalKC;
+
 	let cap = isSolo ? 250 : 400;
 	if (challengeMode) {
 		cap = isSolo ? 75 : 100;
@@ -404,6 +422,14 @@ const itemBoosts: ItemBoost[][] = [
 	],
 	[
 		{
+			item: getOSItem("Tumeken's shadow"),
+			boost: 9,
+			mustBeEquipped: false,
+			setup: 'mage',
+			mustBeCharged: true,
+			requiredCharges: SHADOW_CHARGES_PER_COX
+		},
+		{
 			item: getOSItem('Sanguinesti staff'),
 			boost: 6,
 			mustBeEquipped: false,
@@ -461,7 +487,8 @@ export async function calcCoxDuration(
 		userPercentChange += calcPerc(total, speedReductionForGear);
 
 		// Reduce time for KC
-		const kcPercent = await kcEffectiveness(u, challengeMode, team.length === 1);
+		const stats = await u.fetchMinigames();
+		const kcPercent = kcEffectiveness(challengeMode, team.length === 1, stats.raids, stats.raids_challenge_mode);
 		userPercentChange += calcPerc(kcPercent, speedReductionForKC);
 
 		// Reduce time for item boosts

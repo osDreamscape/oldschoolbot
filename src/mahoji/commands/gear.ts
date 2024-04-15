@@ -1,11 +1,12 @@
+import { toTitleCase } from '@oldschoolgg/toolkit';
 import { ApplicationCommandOptionType, CommandRunOptions } from 'mahoji';
 
+import { gearValidationChecks } from '../../lib/constants';
 import { allPetIDs } from '../../lib/data/CollectionsExport';
 import { GearSetupType, GearSetupTypes, GearStat } from '../../lib/gear/types';
 import { equipPet } from '../../lib/minions/functions/equipPet';
 import { unequipPet } from '../../lib/minions/functions/unequipPet';
 import { itemNameFromID } from '../../lib/util';
-import { toTitleCase } from '../../lib/util/toTitleCase';
 import {
 	gearEquipCommand,
 	gearStatsCommand,
@@ -108,7 +109,7 @@ export const gearCommand: OSBMahojiCommand = {
 					description: 'Equip a pet.',
 					required: false,
 					autocomplete: async (value, user) => {
-						const bank = getMahojiBank(await mahojiUsersSettingsFetch(user.id));
+						const bank = getMahojiBank(await mahojiUsersSettingsFetch(user.id, { bank: true }));
 						return allPetIDs
 							.filter(i => bank.has(i))
 							.map(i => itemNameFromID(i)!)
@@ -134,7 +135,10 @@ export const gearCommand: OSBMahojiCommand = {
 					name: 'setup',
 					description: 'The setup you want to view.',
 					required: true,
-					choices: ['All', ...GearSetupTypes].map(i => ({ name: toTitleCase(i), value: i }))
+					choices: ['All', ...GearSetupTypes, 'Lost on wildy death'].map(i => ({
+						name: toTitleCase(i),
+						value: i
+					}))
 				},
 				{
 					type: ApplicationCommandOptionType.Boolean,
@@ -186,6 +190,12 @@ export const gearCommand: OSBMahojiCommand = {
 		swap?: { setup_one: GearSetupType; setup_two: GearSetupType };
 	}>) => {
 		const user = await mUserFetch(userID);
+		if ((options.equip || options.unequip) && !gearValidationChecks.has(userID)) {
+			const { itemsUnequippedAndRefunded } = await user.validateEquippedGear();
+			if (itemsUnequippedAndRefunded.length > 0) {
+				return `You had some items equipped that you didn't have the requirements to use, so they were unequipped and refunded to your bank: ${itemsUnequippedAndRefunded}`;
+			}
+		}
 		if (options.equip) {
 			return gearEquipCommand({
 				interaction,

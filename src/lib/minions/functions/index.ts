@@ -19,7 +19,7 @@ export const attackStylesArr = [
 	SkillsEnum.Magic,
 	SkillsEnum.Ranged
 ] as const;
-export type AttackStyles = typeof attackStylesArr[number];
+export type AttackStyles = (typeof attackStylesArr)[number];
 
 const miscHpMap: Record<number, number> = {
 	9415: NIGHTMARES_HP,
@@ -107,7 +107,7 @@ export async function addMonsterXP(user: MUser, params: AddMonsterXpParams) {
 	// Calculate superior XP:
 	let superiorSlayXp = 0;
 	let superiorXp = 0;
-	if (superiorQty) {
+	if (superiorQty && osjsSuperior!.data!.hitpoints) {
 		superiorXp = 4 * superiorQty * osjsSuperior!.data!.hitpoints;
 		superiorSlayXp = superiorQty * osjsSuperior!.data!.slayerXP;
 	}

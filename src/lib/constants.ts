@@ -1,20 +1,31 @@
+import path from 'node:path';
+
+import { Image } from '@napi-rs/canvas';
+import { StoreBitfield } from '@oldschoolgg/toolkit';
 import { execSync } from 'child_process';
 import { APIButtonComponent, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import * as dotenv from 'dotenv';
 import { CommandOptions } from 'mahoji/dist/lib/types';
+import { z } from 'zod';
 
 import { DISCORD_SETTINGS, production } from '../config';
 import type { AbstractCommand } from '../mahoji/lib/inhibitors';
 import { SkillsEnum } from './skilling/types';
+import type { ActivityTaskData } from './types/minions';
 import getOSItem from './util/getOSItem';
 import resolveItems from './util/resolveItems';
+import { dateFm } from './util/smallUtils';
 
 export const BotID = DISCORD_SETTINGS.BotID ?? '303730326692429825';
 
 const TestingMainChannelID = DISCORD_SETTINGS.Channels?.TestingMain ?? '940760643525570591';
 
+export const BOT_TYPE: 'BSO' | 'OSB' = 'OSB' as 'BSO' | 'OSB';
+
 export const Channel = {
 	General: DISCORD_SETTINGS.Channels?.General ?? '342983479501389826',
-	Notifications: production ? '469523207691436042' : '1042760447830536212',
+	Notifications:
+		DISCORD_SETTINGS.Channels?.Notifications ?? (production ? '469523207691436042' : '1042760447830536212'),
 	GrandExchange: DISCORD_SETTINGS.Channels?.GrandExchange ?? '682996313209831435',
 	Developers: DISCORD_SETTINGS.Channels?.Developers ?? '648196527294251020',
 	BlacklistLogs: DISCORD_SETTINGS.Channels?.BlacklistLogs ?? '782459317218967602',
@@ -24,7 +35,15 @@ export const Channel = {
 	TestingMain: TestingMainChannelID,
 	BarbarianAssault: DISCORD_SETTINGS.Channels?.BarbarianAssault ?? '789717054902763520',
 	ChambersOfXeric: DISCORD_SETTINGS.Channels?.ChambersOfXeric ?? '835876917252587581',
-	BotLogs: production ? '1051725977320964197' : TestingMainChannelID
+	BotLogs: production ? '1051725977320964197' : TestingMainChannelID,
+	GeneralChannel:
+		BOT_TYPE === 'OSB'
+			? production
+				? '346304390858145792'
+				: '1154056119019393035'
+			: production
+			? '792691343284764693'
+			: '1154056119019393035'
 };
 
 export const Roles = {
@@ -46,7 +65,8 @@ export const Roles = {
 	TopSacrificer: DISCORD_SETTINGS.Roles?.TopSacrificer ?? '795933981715464192',
 	TopMinigamer: DISCORD_SETTINGS.Roles?.TopMinigamer ?? '832798997033779220',
 	TopClueHunter: DISCORD_SETTINGS.Roles?.TopClueHunter ?? '839135887467610123',
-	TopSlayer: DISCORD_SETTINGS.Roles?.TopSlayer ?? '856080958247010324'
+	TopSlayer: DISCORD_SETTINGS.Roles?.TopSlayer ?? '856080958247010324',
+	TopGlobalCL: '1072426869028294747'
 };
 
 export const enum Emoji {
@@ -117,6 +137,7 @@ export const enum Emoji {
 	Ranged = '<:ranged:630911040258834473>',
 	Gear = '<:gear:835314891950129202>',
 	Slayer = '<:slayer:630911040560824330>',
+	CombatAchievements = '<:combatAchievements:1145015804040065184>',
 	Stopwatch = '⏱️',
 	// Badges,
 	BigOrangeGem = '<:bigOrangeGem:778418736188489770>',
@@ -139,7 +160,15 @@ export const enum Emoji {
 	Skull = '<:Skull:802136963926065165>',
 	CombatSword = '<:combat:802136963956080650>',
 	OSRSSkull = '<:skull:863392427040440320>',
-	SOTWTrophy = '<:SOTWtrophy:842938096097820693>'
+	SOTWTrophy = '<:SOTWtrophy:842938096097820693>',
+
+	DragonTrophy = '<:DragonTrophy:1152881074259624007>',
+	RuneTrophy = '<:RuneTrophy:1152881071445254164>',
+	AdamantTrophy = '<:AdamantTrophy:1152881069281001472>',
+	MithrilTrophy = '<:MithrilTrophy:1152881066353373236>',
+	SteelTrophy = '<:SteelTrophy:1152881062846939206>',
+	IronTrophy = '<:IronTrophy:1152881060972085279>',
+	BronzeTrophy = '<:BronzeTrophy:1152881057788592188>'
 }
 
 export enum ActivityGroup {
@@ -150,7 +179,6 @@ export enum ActivityGroup {
 }
 
 export const enum Events {
-	Debug = 'debug',
 	Error = 'error',
 	Log = 'log',
 	Verbose = 'verbose',
@@ -218,7 +246,24 @@ export enum BitField {
 	DisableBirdhouseRunButton = 22,
 	DisableAshSanctifier = 23,
 	BothBotsMaxedFreeTierOnePerks = 24,
-	HasBloodbarkScroll = 25
+	HasBloodbarkScroll = 25,
+	DisableAutoFarmContractButton = 26,
+	DisableGrandExchangeDMs = 27,
+	HadAllSlayerUnlocks = 28,
+	HasSwampbarkScroll = 29,
+	HasSaradominsLight = 30,
+
+	UsedScarredTablet = 31,
+	UsedSirenicTablet = 32,
+	UsedStrangledTablet = 33,
+	UsedFrozenTablet = 34,
+	CleanHerbsFarming = 35,
+	SelfGamblingLocked = 36,
+	DisabledFarmingReminders = 37,
+	DisableClueButtons = 38,
+	DisableAutoSlayButton = 39,
+	DisableHighPeakTimeWarning = 40,
+	DisableOpenableNames = 41
 }
 
 interface BitFieldData {
@@ -249,6 +294,14 @@ export const BitFieldData: Record<BitField, BitFieldData> = {
 	[BitField.HasTornPrayerScroll]: { name: 'Torn Prayer Scroll Used', protected: false, userConfigurable: false },
 	[BitField.HasSlepeyTablet]: { name: 'Slepey Tablet Used', protected: false, userConfigurable: false },
 	[BitField.HasBloodbarkScroll]: { name: 'Runescroll of bloodbark Used', protected: false, userConfigurable: false },
+	[BitField.HasSwampbarkScroll]: { name: 'Runescroll of swampbark Used', protected: false, userConfigurable: false },
+	[BitField.HasSaradominsLight]: { name: "Saradomin's light Used", protected: false, userConfigurable: false },
+	[BitField.HadAllSlayerUnlocks]: { name: 'Had All Slayer Unlocks', protected: false, userConfigurable: false },
+	[BitField.UsedScarredTablet]: { name: 'Used Scarred Tablet', protected: false, userConfigurable: false },
+	[BitField.UsedFrozenTablet]: { name: 'Used Frozen Tablet', protected: false, userConfigurable: false },
+	[BitField.UsedSirenicTablet]: { name: 'Used Sirenic Tablet', protected: false, userConfigurable: false },
+	[BitField.UsedStrangledTablet]: { name: 'Used Strangled Tablet', protected: false, userConfigurable: false },
+	[BitField.SelfGamblingLocked]: { name: 'Self Gambling Lock', protected: false, userConfigurable: false },
 
 	[BitField.BypassAgeRestriction]: { name: 'Bypassed Age Restriction', protected: false, userConfigurable: false },
 	[BitField.HasPermanentEventBackgrounds]: {
@@ -270,7 +323,47 @@ export const BitFieldData: Record<BitField, BitFieldData> = {
 		protected: false,
 		userConfigurable: true
 	},
-	[BitField.DisableAshSanctifier]: { name: 'Disable Ash Sanctifier', protected: false, userConfigurable: true }
+	[BitField.DisableAshSanctifier]: { name: 'Disable Ash Sanctifier', protected: false, userConfigurable: true },
+	[BitField.DisableAutoFarmContractButton]: {
+		name: 'Disable Auto Farm Contract Button',
+		protected: false,
+		userConfigurable: true
+	},
+	[BitField.DisableGrandExchangeDMs]: {
+		name: 'Disable Grand Exchange DMs',
+		protected: false,
+		userConfigurable: true
+	},
+	[BitField.CleanHerbsFarming]: {
+		name: 'Clean herbs during farm runs',
+		protected: false,
+		userConfigurable: true
+	},
+	[BitField.DisabledFarmingReminders]: {
+		name: 'Disable Farming Reminders',
+		protected: false,
+		userConfigurable: true
+	},
+	[BitField.DisableClueButtons]: {
+		name: 'Disable Clue Buttons',
+		protected: false,
+		userConfigurable: true
+	},
+	[BitField.DisableAutoSlayButton]: {
+		name: 'Disable Auto Slay Button',
+		protected: false,
+		userConfigurable: true
+	},
+	[BitField.DisableHighPeakTimeWarning]: {
+		name: 'Disable Wilderness High Peak Time Warning',
+		protected: false,
+		userConfigurable: true
+	},
+	[BitField.DisableOpenableNames]: {
+		name: 'Disable Names On Open',
+		protected: false,
+		userConfigurable: true
+	}
 } as const;
 
 export const enum PatronTierID {
@@ -314,7 +407,6 @@ export const badges: { [key: number]: string } = {
 	[BadgesEnum.SotWTrophy]: Emoji.SOTWTrophy
 };
 
-export const MAX_QP = 290;
 export const MAX_XP = 200_000_000;
 
 export const MIMIC_MONSTER_ID = 23_184;
@@ -371,19 +463,37 @@ export const mahojiInformationalButtons: APIButtonComponent[] = buttonSource.map
 export const PATRON_ONLY_GEAR_SETUP =
 	'Sorry - but the `other` gear setup is only available for Tier 3 Patrons (and higher) to use.';
 
-export type ProjectileType = 'arrow' | 'bolt';
-export const projectiles: Record<ProjectileType, number[]> = {
-	arrow: resolveItems(['Adamant arrow', 'Rune arrow', 'Amethyst arrow', 'Dragon arrow']),
-	bolt: resolveItems([
-		'Runite bolts',
-		'Dragon bolts',
-		'Diamond bolts (e)',
-		'Diamond dragon bolts (e)',
-		'Ruby dragon bolts (e)'
-	])
-};
+export const projectiles = {
+	arrow: {
+		items: resolveItems(['Adamant arrow', 'Rune arrow', 'Amethyst arrow', 'Dragon arrow']),
+		savedByAvas: true,
+		weapons: resolveItems(['Twisted bow'])
+	},
+	bolt: {
+		items: resolveItems([
+			'Runite bolts',
+			'Dragon bolts',
+			'Diamond bolts (e)',
+			'Diamond dragon bolts (e)',
+			'Ruby dragon bolts (e)'
+		]),
+		savedByAvas: true,
+		weapons: resolveItems([
+			'Armadyl crossbow',
+			'Dragon hunter crossbow',
+			'Dragon crossbow',
+			'Zaryte crossbow',
+			'Rune crossbow'
+		])
+	},
+	javelin: {
+		items: resolveItems(['Amethyst javelin', 'Rune javelin', 'Dragon javelin']),
+		savedByAvas: false,
+		weapons: resolveItems(['Heavy ballista'])
+	}
+} as const;
+export type ProjectileType = keyof typeof projectiles;
 
-export const BOT_TYPE: 'BSO' | 'OSB' = 'OSB';
 export const PHOSANI_NIGHTMARE_ID = 9416;
 export const COMMANDS_TO_NOT_TRACK = [['minion', ['k', 'kill', 'clue', 'info']]];
 export function shouldTrackCommand(command: AbstractCommand, args: CommandOptions) {
@@ -397,12 +507,19 @@ export function shouldTrackCommand(command: AbstractCommand, args: CommandOption
 }
 
 export const DISABLED_COMMANDS = new Set<string>();
-export const PVM_METHODS = ['barrage', 'cannon', 'burst', 'none'] as const;
-export type PvMMethod = typeof PVM_METHODS[number];
+export const PVM_METHODS = ['barrage', 'cannon', 'burst', 'chinning', 'none'] as const;
+export type PvMMethod = (typeof PVM_METHODS)[number];
 
 export const NMZ_STRATEGY = ['experience', 'points'] as const;
-export type NMZStrategy = typeof NMZ_STRATEGY[number];
+export type NMZStrategy = (typeof NMZ_STRATEGY)[number];
 
+export const UNDERWATER_AGILITY_THIEVING_TRAINING_SKILL = ['agility', 'thieving', 'agility+thieving'] as const;
+export type UnderwaterAgilityThievingTrainingSkill = (typeof UNDERWATER_AGILITY_THIEVING_TRAINING_SKILL)[number];
+
+export const TWITCHERS_GLOVES = ['egg', 'ring', 'seed', 'clue'] as const;
+export type TwitcherGloves = (typeof TWITCHERS_GLOVES)[number];
+
+export const busyImmuneCommands = ['admin', 'rp'];
 export const usernameCache = new Map<string, string>();
 export const badgesCache = new Map<string, string>();
 export const minionBuyButton = new ButtonBuilder()
@@ -432,8 +549,6 @@ export const chompyHats = [
 	[getOSItem('Chompy bird hat (expert dragon archer)'), 4000]
 ] as const;
 
-export const gitHash = execSync('git rev-parse HEAD').toString().trim();
-
 export const toaPurpleItems = resolveItems([
 	"Tumeken's guardian",
 	"Tumeken's shadow (uncharged)",
@@ -444,3 +559,73 @@ export const toaPurpleItems = resolveItems([
 	'Lightbearer',
 	"Osmumten's fang"
 ]);
+
+export enum PeakTier {
+	High = 'high',
+	Medium = 'medium',
+	Low = 'low'
+}
+
+export const minionActivityCache: Map<string, ActivityTaskData> = new Map();
+
+export const ParsedCustomEmojiWithGroups = /(?<animated>a?):(?<name>[^:]+):(?<id>\d{17,20})/;
+
+const globalConfigSchema = z.object({
+	patreonToken: z.coerce.string().default(''),
+	patreonCampaignID: z.coerce.number().int().default(1),
+	patreonWebhookSecret: z.coerce.string().default(''),
+	httpPort: z.coerce.number().int().default(8080),
+	clientID: z.string().min(15).max(25),
+	geAdminChannelID: z.string().default('')
+});
+dotenv.config({ path: path.resolve(process.cwd(), process.env.TEST ? '.env.test' : '.env') });
+
+export const globalConfig = globalConfigSchema.parse({
+	patreonToken: process.env.PATREON_TOKEN,
+	patreonCampaignID: process.env.PATREON_CAMPAIGN_ID,
+	patreonWebhookSecret: process.env.PATREON_WEBHOOK_SECRET,
+	httpPort: process.env.HTTP_PORT,
+	clientID: process.env.CLIENT_ID,
+	geAdminChannelID: process.env.GE_ADMIN_CHANNEL_ID
+});
+
+export const ONE_TRILLION = 1_000_000_000_000;
+export const demonBaneWeapons = resolveItems(['Silverlight', 'Darklight', 'Arclight']);
+
+const gitHash = execSync('git rev-parse HEAD').toString().trim();
+const gitRemote = BOT_TYPE === 'BSO' ? 'gc/oldschoolbot-secret' : 'oldschoolgg/oldschoolbot';
+
+const GIT_BRANCH = BOT_TYPE === 'BSO' ? 'bso' : 'master';
+
+export const META_CONSTANTS = {
+	GIT_HASH: gitHash,
+	GITHUB_URL: `https://github.com/${gitRemote}/commit/${gitHash}`,
+	STARTUP_DATE: new Date(),
+	GIT_DIFF_URL: `https://github.com/${gitRemote}/compare/${gitHash}...${GIT_BRANCH}`,
+	RENDERED_STR: ''
+};
+META_CONSTANTS.RENDERED_STR = `**Date/Time:** ${dateFm(META_CONSTANTS.STARTUP_DATE)}
+**Git Hash:** ${META_CONSTANTS.GIT_HASH.slice(0, 7)}
+**Commit:** <${META_CONSTANTS.GITHUB_URL}>
+**Code Difference:** <${META_CONSTANTS.GIT_DIFF_URL}>`;
+
+export const masteryKey = BOT_TYPE === 'OSB' ? 'osb_mastery' : 'bso_mastery';
+
+export const ItemIconPacks = [
+	{
+		name: 'Halloween',
+		storeBitfield: StoreBitfield.HalloweenItemIconPack,
+		id: 'halloween',
+		icons: new Map<number, Image>()
+	}
+];
+
+export const patronFeatures = {
+	ShowEnteredInGiveawayList: {
+		tier: PerkTier.Four
+	}
+};
+
+export const gearValidationChecks = new Set();
+
+export const BSO_MAX_TOTAL_LEVEL = 3120;

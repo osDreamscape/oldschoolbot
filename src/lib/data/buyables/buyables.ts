@@ -1,21 +1,22 @@
 import { Bank } from 'oldschooljs';
 
-import { soteSkillRequirements } from '../../../mahoji/lib/abstracted_commands/zalcanoCommand';
-import { chompyHats, MAX_QP } from '../../constants';
+import { QuestID } from '../../../mahoji/lib/abstracted_commands/questCommand';
+import { chompyHats } from '../../constants';
 import { CombatCannonItemBank } from '../../minions/data/combatConstants';
-import { Favours } from '../../minions/data/kourendFavour';
 import { MinigameName } from '../../settings/settings';
-import { getToaKCs } from '../../simulation/toa';
+import { soteSkillRequirements } from '../../skilling/functions/questRequirements';
+import { MUserStats } from '../../structures/MUserStats';
 import { Skills } from '../../types';
-import itemID from '../../util/itemID';
 import { allTeamCapes } from '../misc';
 import { aerialFishBuyables } from './aerialFishBuyables';
 import { canifisClothes } from './canifisClothes';
 import { capeBuyables } from './capes';
 import { castleWarsBuyables } from './castleWars';
+import { forestryBuyables } from './forestryBuyables';
 import { fremennikClothes } from './frem';
 import { gnomeClothes } from './gnomeClothes';
 import { guardiansOfTheRiftBuyables } from './guardiansOfTheRifBuyables';
+import { mairinsMarketBuyables } from './mairinsMarketBuyables';
 import { miningBuyables } from './mining';
 import { godCapes, perduBuyables, prayerBooks } from './perdu';
 import { runeBuyables } from './runes';
@@ -28,16 +29,17 @@ export interface Buyable {
 	name: string;
 	outputItems?: Bank | ((user: MUser) => Bank);
 	qpRequired?: number;
+	requiredQuests?: QuestID[];
 	gpCost?: number;
 	itemCost?: Bank;
 	aliases?: string[];
 	skillsNeeded?: Skills;
-	requiredFavour?: Favours;
 	restockTime?: number;
 	minigameScoreReq?: [MinigameName, number];
 	ironmanPrice?: number;
 	collectionLogReqs?: number[];
-	customReq?: (user: MUser) => Promise<[true] | [false, string]>;
+	customReq?: (user: MUser, userStats: MUserStats) => Promise<[true] | [false, string]>;
+	maxQuantity?: number;
 }
 
 const randomEventBuyables: Buyable[] = [
@@ -95,8 +97,8 @@ for (const [capeName, kcReq] of ichCapes) {
 	toaCapes.push({
 		name: capeName,
 		gpCost: kcReq * 10,
-		customReq: async (user: MUser) => {
-			const toaKCs = await getToaKCs(user);
+		customReq: async (_, stats) => {
+			const toaKCs = stats.getToaKCs();
 			return toaKCs.normalKC + toaKCs.expertKC >= kcReq
 				? [true]
 				: [false, `You need a combined amount of ${kcReq} Normal/Expert Tombs of Amascut KCs to buy this.`];
@@ -185,7 +187,7 @@ const constructionBuyables: Buyable[] = [
 	{
 		name: 'Red dye',
 		gpCost: 100_000,
-		ironmanPrice: 25
+		ironmanPrice: 500
 	},
 	{
 		name: 'Skull',
@@ -199,8 +201,7 @@ const constructionBuyables: Buyable[] = [
 	},
 	{
 		name: 'Arceuus signet',
-		gpCost: 100_000,
-		requiredFavour: Favours.Arceuus
+		gpCost: 100_000
 	},
 	{
 		name: 'Ancient signet',
@@ -215,7 +216,7 @@ const constructionBuyables: Buyable[] = [
 	{
 		name: 'Bucket of water',
 		gpCost: 500,
-		ironmanPrice: 7
+		ironmanPrice: 12
 	}
 ];
 
@@ -281,7 +282,7 @@ const hunterBuyables: Buyable[] = [
 const magicBuyables: Buyable[] = [
 	{
 		name: 'Mystic hat',
-		gpCost: 15_000,
+		gpCost: 25_000,
 		skillsNeeded: {
 			magic: 66
 		}
@@ -589,7 +590,7 @@ const questBuyables: Buyable[] = [
 		name: 'Berserker helm',
 		gpCost: 780_000,
 		qpRequired: 60,
-		ironmanPrice: 78_000
+		ironmanPrice: 98_000
 	},
 	{
 		name: 'Archer helm',
@@ -711,6 +712,11 @@ const questBuyables: Buyable[] = [
 		gpCost: 2_500_000,
 		qpRequired: 175,
 		ironmanPrice: 2000
+	},
+	{
+		name: 'Ring of shadows',
+		gpCost: 75_000,
+		requiredQuests: [QuestID.DesertTreasureII]
 	}
 ];
 
@@ -731,14 +737,10 @@ const noveltyFood: Buyable[] = [
 
 const Buyables: Buyable[] = [
 	{
-		name: 'Quest point cape',
-		outputItems: new Bank({
-			[itemID('Quest point cape')]: 1,
-			[itemID('Quest point hood')]: 1
-		}),
-		aliases: ['quest cape'],
-		qpRequired: MAX_QP,
-		gpCost: 99_000
+		name: 'Rope',
+		aliases: ['rope'],
+		gpCost: 100,
+		ironmanPrice: 25
 	},
 	{
 		name: 'Fishing Bait',
@@ -790,7 +792,7 @@ const Buyables: Buyable[] = [
 	{
 		name: 'Bucket',
 		gpCost: 30,
-		ironmanPrice: 5
+		ironmanPrice: 10
 	},
 	{
 		name: 'Cup of hot water',
@@ -849,6 +851,7 @@ const Buyables: Buyable[] = [
 	{
 		name: 'Salve amulet',
 		gpCost: 200_000,
+		ironmanPrice: 20_000,
 		skillsNeeded: {
 			crafting: 35
 		},
@@ -875,7 +878,7 @@ const Buyables: Buyable[] = [
 	{
 		name: 'Bronze pickaxe',
 		gpCost: 500,
-		ironmanPrice: 1
+		ironmanPrice: 100
 	},
 	{
 		name: 'Iron pickaxe',
@@ -885,7 +888,7 @@ const Buyables: Buyable[] = [
 	{
 		name: 'Steel pickaxe',
 		gpCost: 2000,
-		ironmanPrice: 500
+		ironmanPrice: 600
 	},
 	{
 		name: 'Mithril pickaxe',
@@ -902,19 +905,27 @@ const Buyables: Buyable[] = [
 		gpCost: 100_000,
 		ironmanPrice: 32_000
 	},
-	{
-		name: 'Flower crown',
+	...[
+		'Flower crown (bisexual)',
+		'Flower crown (asexual)',
+		'Flower crown (transgender)',
+		'Flower crown (pansexual)',
+		'Flower crown (non-binary)',
+		'Flower crown (genderqueer)',
+		'Flower crown (lesbian)',
+		'Flower crown (gay)',
+		'Flower crown'
+	].map(name => ({
+		name,
 		itemCost: new Bank({
 			Coins: 5000
 		}),
-		outputItems: new Bank({
-			'Flower crown': 1
-		})
-	},
+		outputItems: new Bank().add(name)
+	})),
 	{
 		name: 'Mithril seeds',
 		gpCost: 3000,
-		ironmanPrice: 600,
+		ironmanPrice: 1000,
 		outputItems: new Bank({
 			'Mithril seeds': 1
 		})
@@ -922,17 +933,17 @@ const Buyables: Buyable[] = [
 	{
 		name: 'Brown apron',
 		gpCost: 1000,
-		ironmanPrice: 100
+		ironmanPrice: 250
 	},
 	{
 		name: 'White apron',
 		gpCost: 1000,
-		ironmanPrice: 100
+		ironmanPrice: 250
 	},
 	{
 		name: 'Pink skirt',
 		gpCost: 1000,
-		ironmanPrice: 2
+		ironmanPrice: 100
 	},
 	{
 		name: 'Bull roarer',
@@ -941,13 +952,13 @@ const Buyables: Buyable[] = [
 	},
 	{
 		name: 'Rolling pin',
-		gpCost: 50_000,
+		gpCost: 70_000,
 		ironmanPrice: 18_720
 	},
 	{
 		name: 'Adamant halberd',
 		gpCost: 100_000,
-		ironmanPrice: 9600,
+		ironmanPrice: 50_000,
 		qpRequired: 150,
 		skillsNeeded: soteSkillRequirements
 	},
@@ -966,8 +977,7 @@ const Buyables: Buyable[] = [
 		'Pirate leggings (red)'
 	].map(i => ({
 		name: i,
-		gpCost: 2000,
-		ironmanPrice: 100
+		gpCost: 20_000
 	})),
 	...[
 		'Ghostly boots',
@@ -984,8 +994,8 @@ const Buyables: Buyable[] = [
 	})),
 	{
 		name: 'Menaphite purple outfit',
-		gpCost: 5000,
-		ironmanPrice: 600,
+		gpCost: 25_000,
+		ironmanPrice: 10_000,
 		outputItems: new Bank({
 			'Menaphite purple hat': 1,
 			'Menaphite purple top': 1,
@@ -995,8 +1005,8 @@ const Buyables: Buyable[] = [
 	},
 	{
 		name: 'Menaphite red outfit',
-		gpCost: 5000,
-		ironmanPrice: 600,
+		gpCost: 25_000,
+		ironmanPrice: 10_000,
 		outputItems: new Bank({
 			'Menaphite red hat': 1,
 			'Menaphite red top': 1,
@@ -1006,19 +1016,19 @@ const Buyables: Buyable[] = [
 	},
 	{
 		name: 'Bone club',
-		gpCost: 1000
+		gpCost: 5000
 	},
 	{
 		name: 'Bone spear',
-		gpCost: 1000
+		gpCost: 5000
 	},
 	{
 		name: 'Bone dagger',
-		gpCost: 2500
+		gpCost: 8000
 	},
 	{
 		name: 'Dorgeshuun crossbow',
-		gpCost: 2500
+		gpCost: 4000
 	},
 	{
 		name: 'Crystal bow',
@@ -1054,8 +1064,8 @@ const Buyables: Buyable[] = [
 		gpCost: 100_000,
 		ironmanPrice: 10_000,
 		qpRequired: 172,
-		customReq: async (user: MUser) => {
-			const toaKCs = await getToaKCs(user);
+		customReq: async (_, stats) => {
+			const toaKCs = stats.getToaKCs();
 			return toaKCs.expertKC >= 25 ? [true] : [false, 'You need a 25 Expert KC in Tombs of Amascut to buy this.'];
 		}
 	},
@@ -1085,7 +1095,9 @@ const Buyables: Buyable[] = [
 	...ironmenBuyables,
 	...shootingStarsBuyables,
 	...guardiansOfTheRiftBuyables,
-	...toaCapes
+	...toaCapes,
+	...mairinsMarketBuyables,
+	...forestryBuyables
 ];
 
 for (const [chompyHat, qty] of chompyHats) {
@@ -1101,8 +1113,9 @@ for (const cape of allTeamCapes) {
 	Buyables.push({
 		name: cape.name,
 		outputItems: new Bank().add(cape.id),
-		gpCost: 1000
+		gpCost: 15_000
 	});
 }
 
 export default Buyables;
+export { Buyables };

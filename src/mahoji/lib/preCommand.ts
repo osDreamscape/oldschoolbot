@@ -1,8 +1,8 @@
 import { InteractionReplyOptions, TextChannel, User } from 'discord.js';
 import { CommandOptions } from 'mahoji/dist/lib/types';
 
-import { modifyBusyCounter } from '../../lib/busyCounterCache';
-import { badges, badgesCache, Emoji, usernameCache } from '../../lib/constants';
+import { modifyBusyCounter, userIsBusy } from '../../lib/busyCounterCache';
+import { badges, badgesCache, busyImmuneCommands, Emoji, usernameCache } from '../../lib/constants';
 import { prisma } from '../../lib/settings/prisma';
 import { removeMarkdownEmojis, stripEmojis } from '../../lib/util';
 import { CACHED_ACTIVE_USER_IDS } from '../../lib/util/cachedUserIDs';
@@ -63,6 +63,14 @@ export async function preCommand({
 			dontRunPostCommand?: boolean;
 	  }
 > {
+	debugLog('Attempt to run command', {
+		type: 'RUN_COMMAND',
+		command_name: abstractCommand.name,
+		user_id: userID,
+		guild_id: guildID,
+		channel_id: channelID,
+		options
+	});
 	CACHED_ACTIVE_USER_IDS.add(userID);
 	if (globalClient.isShuttingDown) {
 		return {
@@ -71,11 +79,12 @@ export async function preCommand({
 			dontRunPostCommand: true
 		};
 	}
-	const user = await mUserFetch(userID.toString());
-	if (user.isBusy && !bypassInhibitors && abstractCommand.name !== 'admin') {
+	const user = await mUserFetch(userID);
+	user.checkBankBackground();
+	if (userIsBusy(userID) && !bypassInhibitors && !busyImmuneCommands.includes(abstractCommand.name)) {
 		return { silent: true, reason: { content: 'You cannot use a command right now.' }, dontRunPostCommand: true };
 	}
-	modifyBusyCounter(userID, 1);
+	if (!busyImmuneCommands.includes(abstractCommand.name)) modifyBusyCounter(userID, 1);
 
 	const guild = guildID ? globalClient.guilds.cache.get(guildID.toString()) : null;
 	const member = guild?.members.cache.get(userID.toString());
@@ -103,13 +112,4 @@ export async function preCommand({
 		});
 		return inhibitResult;
 	}
-
-	debugLog('Attempt to run command', {
-		type: 'RUN_COMMAND',
-		command_name: abstractCommand.name,
-		user_id: userID,
-		guild_id: guildID,
-		channel_id: channelID,
-		options
-	});
 }

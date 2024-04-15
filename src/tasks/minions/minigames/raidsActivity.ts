@@ -1,18 +1,22 @@
+import { formatOrdinal } from '@oldschoolgg/toolkit';
 import { shuffleArr } from 'e';
 import { Bank } from 'oldschooljs';
+import { SkillsEnum } from 'oldschooljs/dist/constants';
 import { ChambersOfXeric } from 'oldschooljs/dist/simulation/misc/ChambersOfXeric';
 
+import { drawChestLootImage } from '../../../lib/bankImage';
 import { Emoji, Events } from '../../../lib/constants';
 import { chambersOfXericCL, chambersOfXericMetamorphPets } from '../../../lib/data/CollectionsExport';
 import { createTeam } from '../../../lib/data/cox';
 import { trackLoot } from '../../../lib/lootTrack';
+import { resolveAttackStyles } from '../../../lib/minions/functions';
 import { getMinigameScore, incrementMinigameScore } from '../../../lib/settings/settings';
 import { RaidsOptions } from '../../../lib/types/minions';
 import { randomVariation, roll } from '../../../lib/util';
-import { formatOrdinal } from '../../../lib/util/formatOrdinal';
 import { handleTripFinish } from '../../../lib/util/handleTripFinish';
 import resolveItems from '../../../lib/util/resolveItems';
 import { updateBankSetting } from '../../../lib/util/updateBankSetting';
+import { userStatsUpdate } from '../../../mahoji/mahojiSettings';
 
 interface RaidResultUser {
 	personalPoints: number;
@@ -28,7 +32,50 @@ const greenItems = resolveItems(['Twisted ancestral colour kit']);
 const blueItems = resolveItems(['Metamorphic dust']);
 const purpleButNotAnnounced = resolveItems(['Dexterous prayer scroll', 'Arcane prayer scroll']);
 
-const purpleItems = chambersOfXericCL.filter(i => !notPurple.includes(i));
+export const coxPurpleItems = chambersOfXericCL.filter(i => !notPurple.includes(i));
+
+async function handleCoxXP(user: MUser, qty: number, isCm: boolean) {
+	let hitpointsXP = 12_000 * qty;
+	let rangeXP = 10_000 * qty;
+	let magicXP = 1500 * qty;
+	let meleeXP = 8000 * qty;
+
+	if (isCm) {
+		hitpointsXP *= 1.5;
+		rangeXP *= 1.5;
+		magicXP *= 1.5;
+		meleeXP *= 1.5;
+	}
+
+	const results = [];
+	results.push(
+		await user.addXP({
+			skillName: SkillsEnum.Hitpoints,
+			amount: hitpointsXP,
+			minimal: true,
+			source: 'ChambersOfXeric'
+		})
+	);
+	results.push(
+		await user.addXP({ skillName: SkillsEnum.Ranged, amount: rangeXP, minimal: true, source: 'ChambersOfXeric' })
+	);
+	results.push(
+		await user.addXP({ skillName: SkillsEnum.Magic, amount: magicXP, minimal: true, source: 'ChambersOfXeric' })
+	);
+	let [, , styles] = resolveAttackStyles(user, {
+		monsterID: -1
+	});
+	if (([SkillsEnum.Magic, SkillsEnum.Ranged] as const).some(style => styles.includes(style))) {
+		styles = [SkillsEnum.Attack, SkillsEnum.Strength, SkillsEnum.Defence];
+	}
+	const perSkillMeleeXP = meleeXP / styles.length;
+	for (const style of styles) {
+		results.push(
+			await user.addXP({ skillName: style, amount: perSkillMeleeXP, minimal: true, source: 'ChambersOfXeric' })
+		);
+	}
+	return results;
+}
 
 export const raidsTask: MinionTask = {
 	type: 'Raids',
@@ -36,6 +83,7 @@ export const raidsTask: MinionTask = {
 		const { channelID, users, challengeMode, duration, leader, quantity: _quantity } = data;
 		const quantity = _quantity ?? 1;
 		const allUsers = await Promise.all(users.map(async u => mUserFetch(u)));
+		const previousCLs = allUsers.map(i => i.cl.clone());
 
 		let totalPoints = 0;
 		const raidResults = new Map<string, RaidResultUser>();
@@ -77,7 +125,7 @@ export const raidsTask: MinionTask = {
 
 				const hasDust = userData.loot.has('Metamorphic dust') || userData.mUser.cl.has('Metamorphic dust');
 				if (challengeMode && roll(50) && hasDust) {
-					const { bank } = userData.loot.clone().add(userData.mUser.allItemsOwned());
+					const { bank } = userData.loot.clone().add(userData.mUser.allItemsOwned);
 					const unownedPet = shuffleArr(chambersOfXericMetamorphPets).find(pet => !bank[pet]);
 					if (unownedPet) {
 						userLoot.add(unownedPet);
@@ -105,28 +153,35 @@ export const raidsTask: MinionTask = {
 			const { personalPoints, deaths, deathChance, loot, mUser: user } = userData;
 			if (!user) continue;
 
-			await user.update({
-				total_cox_points: {
-					increment: personalPoints
-				}
-			});
+			const [xpResult, { itemsAdded }] = await Promise.all([
+				handleCoxXP(user, quantity, challengeMode),
+				transactItems({
+					userID,
+					itemsToAdd: loot,
+					collectionLog: true
+				}),
+				userStatsUpdate(
+					user.id,
+					{
+						total_cox_points: {
+							increment: personalPoints
+						}
+					},
+					{}
+				)
+			]);
 
-			const { itemsAdded } = await transactItems({
-				userID,
-				itemsToAdd: loot,
-				collectionLog: true
-			});
 			totalLoot.add(itemsAdded);
 
 			const items = itemsAdded.items();
 
-			const isPurple = items.some(([item]) => purpleItems.includes(item.id));
+			const isPurple = items.some(([item]) => coxPurpleItems.includes(item.id));
 			const isGreen = items.some(([item]) => greenItems.includes(item.id));
 			const isBlue = items.some(([item]) => blueItems.includes(item.id));
 			const specialLoot = isPurple;
 			const emote = isBlue ? Emoji.Blue : isGreen ? Emoji.Green : Emoji.Purple;
-			if (items.some(([item]) => purpleItems.includes(item.id) && !purpleButNotAnnounced.includes(item.id))) {
-				const itemsToAnnounce = itemsAdded.filter(item => purpleItems.includes(item.id), false);
+			if (items.some(([item]) => coxPurpleItems.includes(item.id) && !purpleButNotAnnounced.includes(item.id))) {
+				const itemsToAnnounce = itemsAdded.filter(item => coxPurpleItems.includes(item.id), false);
 				globalClient.emit(
 					Events.ServerNotification,
 					`${emote} ${user.badgedUsername} just received **${itemsToAnnounce}** on their ${formatOrdinal(
@@ -139,7 +194,7 @@ export const raidsTask: MinionTask = {
 
 			resultMessage += `\n${deathStr} **${user}** received: ${str} (${personalPoints?.toLocaleString()} pts, ${
 				Emoji.Skull
-			}${deathChance.toFixed(0)}%) `;
+			}${deathChance.toFixed(0)}%) ${xpResult}`;
 		}
 
 		updateBankSetting('cox_loot', totalLoot);
@@ -157,6 +212,48 @@ export const raidsTask: MinionTask = {
 			}))
 		});
 
-		handleTripFinish(allUsers[0], channelID, resultMessage, undefined, data, null);
+		const shouldShowImage = allUsers.length <= 3 && Array.from(raidResults.values()).every(i => i.loot.length <= 6);
+
+		if (users.length === 1) {
+			return handleTripFinish(
+				allUsers[0],
+				channelID,
+				resultMessage,
+				shouldShowImage
+					? await drawChestLootImage({
+							entries: [
+								{
+									loot: totalLoot,
+									user: allUsers[0],
+									previousCL: previousCLs[0],
+									customTexts: []
+								}
+							],
+							type: 'Chambers of Xerician'
+					  })
+					: undefined,
+				data,
+				totalLoot
+			);
+		}
+
+		handleTripFinish(
+			allUsers[0],
+			channelID,
+			resultMessage,
+			shouldShowImage
+				? await drawChestLootImage({
+						entries: allUsers.map((u, index) => ({
+							loot: raidResults.get(u.id)!.loot,
+							user: u,
+							previousCL: previousCLs[index],
+							customTexts: []
+						})),
+						type: 'Chambers of Xerician'
+				  })
+				: undefined,
+			data,
+			null
+		);
 	}
 };

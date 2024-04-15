@@ -1,18 +1,20 @@
-import { Embed } from '@discordjs/builders';
-import { Activity } from '@prisma/client';
+import { EmbedBuilder } from '@discordjs/builders';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, TextChannel } from 'discord.js';
-import { noOp, randInt, shuffleArr, Time } from 'e';
+import { noOp, randInt, removeFromArr, shuffleArr, Time } from 'e';
 
 import { production } from '../config';
-import { BitField, Channel, informationalButtons } from './constants';
+import { userStatsUpdate } from '../mahoji/mahojiSettings';
+import { BitField, Channel, informationalButtons, PeakTier } from './constants';
+import { GrandExchange } from './grandExchange';
+import { cacheGEPrices } from './marketPrices';
 import { collectMetrics } from './metrics';
 import { mahojiUserSettingsUpdate } from './MUser';
 import { prisma, queryCountStore } from './settings/prisma';
 import { runCommand } from './settings/settings';
 import { getFarmingInfo } from './skilling/functions/getFarmingInfo';
 import Farming from './skilling/skills/farming';
-import { completeActivity } from './Task';
-import { awaitMessageComponentInteraction, getSupportGuild, stringMatches } from './util';
+import { processPendingActivities } from './Task';
+import { awaitMessageComponentInteraction, getSupportGuild, makeComponents, stringMatches } from './util';
 import { farmingPatchNames, getFarmingKeyFromName } from './util/farmingHelpers';
 import { handleGiveawayCompletion } from './util/giveaway';
 import { logError } from './util/logError';
@@ -20,49 +22,43 @@ import { minionIsBusy } from './util/minionIsBusy';
 
 let lastMessageID: string | null = null;
 let lastMessageGEID: string | null = null;
-const supportEmbed = new Embed()
+const supportEmbed = new EmbedBuilder()
 	.setAuthor({ name: '⚠️ ⚠️ ⚠️ ⚠️ READ THIS ⚠️ ⚠️ ⚠️ ⚠️' })
-	.addField({
+	.addFields({
 		name: '📖 Read the FAQ',
 		value: 'The FAQ answers commonly asked questions: https://wiki.oldschool.gg/faq - also make sure to read the other pages of the website, which might contain the information you need.'
 	})
-	.addField({
+	.addFields({
 		name: '🔎 Search',
 		value: 'Search this channel first, you might find your question has already been asked and answered.'
 	})
-	.addField({
+	.addFields({
 		name: '💬 Ask',
 		value: "If your question isn't answered in the FAQ, and you can't find it from searching, simply ask your question and wait for someone to answer. If you don't get an answer, you can post your question again."
 	})
-	.addField({
+	.addFields({
 		name: '⚠️ Dont ping anyone',
 		value: 'Do not ping mods, or any roles/people in here. You will be muted. Ask your question, and wait.'
 	});
 
-const geEmbed = new Embed()
+const geEmbed = new EmbedBuilder()
 	.setAuthor({ name: '⚠️ ⚠️ ⚠️ ⚠️ READ THIS ⚠️ ⚠️ ⚠️ ⚠️' })
-	.addField({
+	.addFields({
 		name: "⚠️ Don't get scammed",
 		value: 'Beware of people "buying out banks" or buying lots of skilling supplies, which can be worth a lot more in the bot than they pay you. Skilling supplies are often worth a lot more than they are ingame. Don\'t just trust that they\'re giving you a fair price.'
 	})
-	.addField({
+	.addFields({
 		name: '🔎 Search',
 		value: 'Search this channel first, someone might already be selling/buying what you want.'
 	})
-	.addField({
+	.addFields({
 		name: '💬 Read the rules/Pins',
 		value: 'Read the pinned rules/instructions before using the channel.'
 	})
-	.addField({
+	.addFields({
 		name: 'Keep Ads Short',
 		value: 'Keep your ad less than 10 lines long, as short as possible.'
 	});
-
-export const enum PeakTier {
-	High = 'high',
-	Medium = 'medium',
-	Low = 'low'
-}
 
 export interface Peak {
 	startTime: number;
@@ -73,10 +69,10 @@ export interface Peak {
 /**
  * Tickers should idempotent, and be able to run at any time.
  */
-export const tickers: { name: string; interval: number; timer: NodeJS.Timeout | null; cb: () => unknown }[] = [
+export const tickers: { name: string; interval: number; timer: NodeJS.Timeout | null; cb: () => Promise<unknown> }[] = [
 	{
 		name: 'giveaways',
-		interval: Time.Second * 5,
+		interval: Time.Second * 10,
 		timer: null,
 		cb: async () => {
 			const result = await prisma.giveaway.findMany({
@@ -100,7 +96,7 @@ export const tickers: { name: string; interval: number; timer: NodeJS.Timeout | 
 			queryCountStore.value = 0;
 			const data = {
 				timestamp: Math.floor(Date.now() / 1000),
-				...collectMetrics(),
+				...(await collectMetrics()),
 				qps: storedCount / 60
 			};
 			if (isNaN(data.eventLoopDelayMean)) {
@@ -114,31 +110,9 @@ export const tickers: { name: string; interval: number; timer: NodeJS.Timeout | 
 	{
 		name: 'minion_activities',
 		timer: null,
-		interval: Time.Second * 5,
+		interval: production ? Time.Second * 5 : 500,
 		cb: async () => {
-			const activities: Activity[] = await prisma.activity.findMany({
-				where: {
-					completed: false,
-					finish_date: production
-						? {
-								lt: new Date()
-						  }
-						: undefined
-				}
-			});
-
-			await prisma.activity.updateMany({
-				where: {
-					id: {
-						in: activities.map(i => i.id)
-					}
-				},
-				data: {
-					completed: true
-				}
-			});
-
-			await Promise.all(activities.map(completeActivity));
+			await processPendingActivities();
 		}
 	},
 	{
@@ -146,20 +120,35 @@ export const tickers: { name: string; interval: number; timer: NodeJS.Timeout | 
 		interval: Time.Minute * 3,
 		timer: null,
 		cb: async () => {
-			const result = await prisma.$queryRawUnsafe<{ id: string }[]>(
-				'SELECT id FROM users WHERE bitfield && \'{2,3,4,5,6,7,8}\'::int[] AND "lastDailyTimestamp" != -1 AND to_timestamp("lastDailyTimestamp" / 1000) < now() - interval \'12 hours\';'
+			const result = await prisma.$queryRawUnsafe<{ id: string; last_daily_timestamp: bigint }[]>(
+				`
+SELECT users.id, user_stats.last_daily_timestamp
+FROM users
+JOIN user_stats ON users.id::bigint = user_stats.user_id
+WHERE bitfield && '{2,3,4,5,6,7,8,12,21,24}'::int[] AND user_stats."last_daily_timestamp" != -1 AND to_timestamp(user_stats."last_daily_timestamp" / 1000) < now() - INTERVAL '12 hours';
+`
 			);
+			const dailyDMButton = new ButtonBuilder()
+				.setCustomId('CLAIM_DAILY')
+				.setLabel('Claim Daily')
+				.setEmoji('493286312854683654')
+				.setStyle(ButtonStyle.Secondary);
+			const components = [dailyDMButton];
+			let str = 'Your daily is ready!';
 
 			for (const row of result.values()) {
 				if (!production) continue;
-				const user = await mUserFetch(row.id);
-				if (Number(user.user.lastDailyTimestamp) === -1) continue;
+				if (Number(row.last_daily_timestamp) === -1) continue;
 
-				await user.update({
-					lastDailyTimestamp: -1
-				});
-				const klasaUser = await globalClient.fetchUser(user.id);
-				await klasaUser.send('Your daily is ready!').catch(noOp);
+				await userStatsUpdate(
+					row.id,
+					{
+						last_daily_timestamp: -1
+					},
+					{}
+				);
+				const user = await globalClient.fetchUser(row.id);
+				await user.send({ content: str, components: makeComponents(components) }).catch(noOp);
 			}
 		}
 	},
@@ -225,14 +214,15 @@ export const tickers: { name: string; interval: number; timer: NodeJS.Timeout | 
 							BitField.isContributor,
 							BitField.isModerator
 						]
-					},
-					farming_patch_reminders: true
+					}
 				},
 				select: {
-					id: true
+					id: true,
+					bitfield: true
 				}
 			});
-			for (const { id } of users) {
+			for (const { id, bitfield } of users) {
+				if (bitfield.includes(BitField.DisabledFarmingReminders)) continue;
 				const { patches } = await getFarmingInfo(id);
 				for (const patchType of farmingPatchNames) {
 					const patch = patches[patchType];
@@ -294,7 +284,7 @@ export const tickers: { name: string; interval: number; timer: NodeJS.Timeout | 
 						// Check disable first so minion doesn't have to be free to disable reminders.
 						if (selection.customId === 'DISABLE') {
 							await mahojiUserSettingsUpdate(user.id, {
-								farming_patch_reminders: false
+								bitfield: removeFromArr(bitfield, BitField.DisabledFarmingReminders)
 							});
 							await user.send('Farming patch reminders have been disabled.');
 							return;
@@ -313,7 +303,8 @@ export const tickers: { name: string; interval: number; timer: NodeJS.Timeout | 
 								guildID: undefined,
 								user: await mUserFetch(user.id),
 								member: message.member,
-								interaction: selection
+								interaction: selection,
+								continueDeltaMillis: selection.createdAt.getTime() - message.createdAt.getTime()
 							});
 						}
 					} catch {
@@ -367,6 +358,23 @@ export const tickers: { name: string; interval: number; timer: NodeJS.Timeout | 
 			const res = await channel.send({ embeds: [geEmbed] });
 			lastMessageGEID = res.id;
 		}
+	},
+	{
+		name: 'ge_ticker',
+		timer: null,
+		interval: Time.Second * 3,
+		cb: async () => {
+			await GrandExchange.tick();
+		}
+	},
+	{
+		name: 'Cache g.e prices and validate',
+		timer: null,
+		interval: Time.Hour * 4,
+		cb: async () => {
+			await cacheGEPrices();
+			await GrandExchange.extensiveVerification();
+		}
 	}
 ];
 
@@ -376,11 +384,10 @@ export function initTickers() {
 		const fn = async () => {
 			try {
 				if (globalClient.isShuttingDown) return;
-				debugLog(`Starting ${ticker.name} ticker`);
 				await ticker.cb();
-				debugLog(`Finished ${ticker.name} ticker`);
 			} catch (err) {
 				logError(err);
+				debugLog(`${ticker.name} ticker errored`, { type: 'TICKER' });
 			} finally {
 				ticker.timer = setTimeout(fn, ticker.interval);
 			}

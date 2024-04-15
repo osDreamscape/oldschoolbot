@@ -1,8 +1,9 @@
-import { notEmpty, randFloat, randInt } from 'e';
+import { notEmpty, objectKeys, randFloat, randInt } from 'e';
 import { Bank, Monsters, MonsterSlayerMaster } from 'oldschooljs';
 import Monster from 'oldschooljs/dist/structures/Monster';
 
 import { KourendKebosDiary, userhasDiaryTier } from '../../lib/diaries';
+import { CombatAchievements } from '../combat_achievements/combatAchievements';
 import { PvMMethod } from '../constants';
 import { CombatOptionsEnum } from '../minions/data/combatConstants';
 import { KillableMonster } from '../minions/types';
@@ -43,7 +44,9 @@ export function determineBoostChoice(params: DetermineBoostParams) {
 	if (params.method && params.method === 'none') {
 		return boostChoice;
 	}
-	if (params.method && params.method === 'barrage') {
+	if (params.method && params.method === 'chinning') {
+		boostChoice = 'chinning';
+	} else if (params.method && params.method === 'barrage') {
 		boostChoice = 'barrage';
 	} else if (params.method && params.method === 'burst') {
 		boostChoice = 'burst';
@@ -190,7 +193,16 @@ export async function assignNewSlayerTask(_user: MUser, master: SlayerMaster) {
 
 	const newUser = await getNewUser(_user.id);
 
-	const quantity = randInt(assignedTask!.amount[0], assignedTask!.amount[1]);
+	let maxQuantity = assignedTask!.amount[1];
+	if (bossTask && _user.user.slayer_unlocks.includes(SlayerTaskUnlocksEnum.LikeABoss)) {
+		for (const tier of objectKeys(CombatAchievements)) {
+			if (_user.hasCompletedCATier(tier)) {
+				maxQuantity += 5;
+			}
+		}
+	}
+
+	const quantity = randInt(assignedTask!.amount[0], maxQuantity);
 	const currentTask = await prisma.slayerTask.create({
 		data: {
 			user_id: newUser.id,
@@ -271,13 +283,18 @@ export async function getUsersCurrentSlayerInfo(id: string) {
 	}
 
 	const slayerMaster = slayerMasters.find(master => master.id === currentTask.slayer_master_id);
-	const assignedTask = slayerMaster!.tasks.find(m => m.monster.id === currentTask.monster_id)!;
+	const assignedTask = slayerMaster?.tasks.find(m => m.monster.id === currentTask.monster_id);
 
 	if (!assignedTask || !slayerMaster) {
 		logError(
 			`Could not find task or slayer master for user ${id} task ${currentTask.monster_id} master ${currentTask.slayer_master_id}`,
 			{ userID: id }
 		);
+		// 'Skip' broken task:
+		await prisma.slayerTask.update({
+			data: { skipped: true, quantity_remaining: 0 },
+			where: { id: currentTask.id }
+		});
 		return {
 			currentTask: null,
 			assignedTask: null,
@@ -351,41 +368,35 @@ export function hasSlayerUnlock(
 	return { success, errors };
 }
 
+const filterLootItems = resolveItems([
+	"Hydra's eye",
+	"Hydra's fang",
+	"Hydra's heart",
+	'Dark totem base',
+	'Dark totem middle',
+	'Dark totem top',
+	'Bludgeon claw'
+]);
+const ringPieces = resolveItems(["Hydra's eye", "Hydra's fang", "Hydra's heart"]);
+const totemPieces = resolveItems(['Dark totem base', 'Dark totem middle', 'Dark totem top']);
+const bludgeonPieces = resolveItems(['Bludgeon claw', 'Bludgeon spine', 'Bludgeon axon']);
+
 export function filterLootReplace(myBank: Bank, myLoot: Bank) {
 	// Order: Fang, eye, heart.
-	const numBlackMask = myLoot.amount('Black mask (10)');
 	let numHydraEyes = myLoot.amount("Hydra's eye");
 	numHydraEyes += myLoot.amount("Hydra's fang");
 	numHydraEyes += myLoot.amount("Hydra's heart");
 	const numDarkTotemBases = myLoot.amount('Dark totem base');
 	const numBludgeonPieces = myLoot.amount('Bludgeon claw');
-	const ringPieces = resolveItems(["Hydra's eye", "Hydra's fang", "Hydra's heart"]) as number[];
-	const totemPieces = resolveItems(['Dark totem base', 'Dark totem middle', 'Dark totem top']) as number[];
-	const bludgeonPieces = resolveItems(['Bludgeon claw', 'Bludgeon spine', 'Bludgeon axon']) as number[];
+	if (!numBludgeonPieces && !numDarkTotemBases && !numHydraEyes) {
+		return { bankLoot: myLoot, clLoot: myLoot };
+	}
 
-	myLoot.filter(l => {
-		return (
-			l.id !== itemID('Black mask (10)') &&
-			l.id !== itemID("Hydra's eye") &&
-			l.id !== itemID("Hydra's fang") &&
-			l.id !== itemID("Hydra's heart") &&
-			l.id !== itemID('Dark totem base') &&
-			l.id !== itemID('Dark totem middle') &&
-			l.id !== itemID('Dark totem top') &&
-			l.id !== itemID('Bludgeon claw')
-		);
-	}, true);
+	myLoot.filter(i => !filterLootItems.includes(i.id), true);
 
 	const myClLoot = new Bank(myLoot.bank);
 
-	if (numBlackMask) {
-		for (let x = 0; x < numBlackMask; x++) {
-			myLoot.add('Black mask');
-			myClLoot.add('Black mask (10)');
-		}
-	}
-
-	const combinedBank = new Bank().add(myBank).add(myLoot);
+	const combinedBank = new Bank(myBank).add(myLoot);
 	if (numBludgeonPieces) {
 		for (let x = 0; x < numBludgeonPieces; x++) {
 			const bank: number[] = [];
@@ -447,7 +458,7 @@ export function filterLootReplace(myBank: Bank, myLoot: Bank) {
 
 export async function getSlayerTaskStats(userID: string) {
 	const result: { monster_id: number; total_quantity: number; qty: number }[] =
-		await prisma.$queryRaw`SELECT monster_id, SUM(quantity) AS total_quantity, COUNT(monster_id) AS qty
+		await prisma.$queryRaw`SELECT monster_id, SUM(quantity)::int AS total_quantity, COUNT(monster_id)::int AS qty
 FROM slayer_tasks
 WHERE user_id = ${userID}
 AND quantity_remaining = 0

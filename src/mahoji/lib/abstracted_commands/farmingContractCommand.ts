@@ -1,10 +1,10 @@
 import { CommandResponse } from 'mahoji/dist/lib/structures/ICommand';
 
-import { Favours, gotFavour } from '../../../lib/minions/data/kourendFavour';
 import { defaultFarmingContract } from '../../../lib/minions/farming';
 import { ContractOption, FarmingContract, FarmingContractDifficultyLevel } from '../../../lib/minions/farming/types';
 import { getPlantToGrow } from '../../../lib/skilling/functions/calcFarmingContracts';
 import { getFarmingInfo } from '../../../lib/skilling/functions/getFarmingInfo';
+import { plants } from '../../../lib/skilling/skills/farming';
 import { makeComponents, makeEasierFarmingContractButton, roughMergeMahojiResponse } from '../../../lib/util';
 import { newChatHeadImage } from '../../../lib/util/chatHeadImage';
 import { findPlant } from '../../../lib/util/farmingHelpers';
@@ -42,11 +42,6 @@ export async function farmingContractCommand(userID: string, input?: ContractOpt
 
 	if (!currentContract.hasContract && input === 'easier') {
 		return janeImage("You currently don't have a contract, so you can't ask for something easier!");
-	}
-
-	const [hasFavour, requiredPoints] = gotFavour(user, Favours.Hosidius, 60);
-	if (!hasFavour) {
-		return `${user.minionName} needs ${requiredPoints}% Hosidius Favour to enter the Farming Guild!`;
 	}
 
 	if (input !== 'easier' && farmingLevel < contractToFarmingLevel[input]) {
@@ -144,14 +139,27 @@ export async function farmingContractCommand(userID: string, input?: ContractOpt
 }
 
 export async function canRunAutoContract(user: MUser) {
-	const farmingDetails = await getFarmingInfo(user.id);
+	// Must be above 45 farming
+	if (user.skillLevel('farming') < 45) return false;
+
+	// If we don't have a contract, we can auto contract
 	const contract = user.user.minion_farmingContract as FarmingContract | null;
-	const contractedPlant = farmingDetails.patchesDetailed.find(p => p.plant?.name === contract?.plantToGrow);
-	return user.skillLevel('farming') > 45 && (!contractedPlant || contractedPlant.ready !== false);
+	if (!contract || !contract.hasContract) return true;
+
+	const farmingDetails = await getFarmingInfo(user.id);
+
+	// If the patch we're contracted to is ready, we can auto contract
+	const contractedPatch = farmingDetails.patchesDetailed.find(
+		p => p.patchName === plants.find(p => p.name === contract.plantToGrow)?.seedType
+	);
+	return contractedPatch?.ready;
 }
 
 export async function autoContract(user: MUser, channelID: string, userID: string): CommandResponse {
-	const [farmingDetails, mahojiUser] = await Promise.all([getFarmingInfo(userID), mahojiUsersSettingsFetch(userID)]);
+	const [farmingDetails, mahojiUser] = await Promise.all([
+		getFarmingInfo(userID),
+		mahojiUsersSettingsFetch(userID, { minion_farmingContract: true })
+	]);
 	const contract = mahojiUser.minion_farmingContract as FarmingContract | null;
 	const plant = contract?.hasContract ? findPlant(contract?.plantToGrow) : null;
 	const patch = farmingDetails.patchesDetailed.find(p => p.plant === plant);
@@ -168,7 +176,7 @@ export async function autoContract(user: MUser, channelID: string, userID: strin
 	// If they have no contract, get them a contract, recurse.
 	if (!contract || !contract.hasContract) {
 		const contractResult = await farmingContractCommand(userID, bestContractTierCanDo);
-		const newUser = await mahojiUsersSettingsFetch(mahojiUser.id, { minion_farmingContract: true });
+		const newUser = await mahojiUsersSettingsFetch(userID, { minion_farmingContract: true });
 		const contract = newUser.minion_farmingContract as FarmingContract | null;
 		if (!contract || !contract.plantToGrow) return contractResult;
 		return farmingPlantCommand({

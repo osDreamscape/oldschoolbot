@@ -1,20 +1,21 @@
+import { discrimName, mentionCommand, truncateString } from '@oldschoolgg/toolkit';
 import { ApplicationCommandOptionType, CommandRunOptions } from 'mahoji';
 import { MahojiUserOption } from 'mahoji/dist/lib/types';
 import { Bank } from 'oldschooljs';
 
 import { BLACKLISTED_USERS } from '../../lib/blacklists';
 import { Events } from '../../lib/constants';
-import { addToGPTaxBalance, prisma } from '../../lib/settings/prisma';
-import { discrimName, truncateString } from '../../lib/util';
+import { prisma } from '../../lib/settings/prisma';
 import { handleMahojiConfirmation } from '../../lib/util/handleMahojiConfirmation';
 import { deferInteraction } from '../../lib/util/interactionReply';
 import itemIsTradeable from '../../lib/util/itemIsTradeable';
 import { parseBank } from '../../lib/util/parseStringBank';
+import { tradePlayerItems } from '../../lib/util/tradePlayerItems';
 import { filterOption } from '../lib/mahojiCommandOptions';
 import { OSBMahojiCommand } from '../lib/util';
-import { mahojiParseNumber } from '../mahojiSettings';
+import { addToGPTaxBalance, mahojiParseNumber } from '../mahojiSettings';
 
-export const askCommand: OSBMahojiCommand = {
+export const tradeCommand: OSBMahojiCommand = {
 	name: 'trade',
 	description: 'Allows you to trade items with other players.',
 	options: [
@@ -128,11 +129,10 @@ Both parties must click confirm to make the trade.`,
 		if (!recipientUser.owns(itemsReceived)) return "They don't own those items.";
 		if (!senderUser.owns(itemsSent)) return "You don't own those items.";
 
-		await senderUser.removeItemsFromBank(itemsSent);
-		await recipientUser.removeItemsFromBank(itemsReceived);
-		await senderUser.addItemsToBank({ items: itemsReceived, collectionLog: false, filterLoot: false });
-		await recipientUser.addItemsToBank({ items: itemsSent, collectionLog: false, filterLoot: false });
-
+		const { success, message } = await tradePlayerItems(senderUser, recipientUser, itemsSent, itemsReceived);
+		if (!success) {
+			return `Trade failed because: ${message}`;
+		}
 		await prisma.economyTransaction.create({
 			data: {
 				guild_id: BigInt(guildID),
@@ -148,14 +148,16 @@ Both parties must click confirm to make the trade.`,
 			`${senderUser.mention} sold ${itemsSent} to ${recipientUser.mention} for ${itemsReceived}.`
 		);
 		if (itemsReceived.has('Coins')) {
-			addToGPTaxBalance(recipientUser.id, itemsReceived.amount('Coins'));
+			await addToGPTaxBalance(recipientUser.id, itemsReceived.amount('Coins'));
 		}
 		if (itemsSent.has('Coins')) {
-			addToGPTaxBalance(senderUser.id, itemsSent.amount('Coins'));
+			await addToGPTaxBalance(senderUser.id, itemsSent.amount('Coins'));
 		}
 
 		return `${discrimName(senderAPIUser)} sold ${itemsSent} to ${discrimName(
 			recipientAPIUser
-		)} in return for ${itemsReceived}.`;
+		)} in return for ${itemsReceived}.
+
+You can now buy/sell items in the Grand Exchange: ${mentionCommand(globalClient, 'ge')}`;
 	}
 };

@@ -1,12 +1,11 @@
-import { SimpleTable } from '@oldschoolgg/toolkit';
-import { clamp, percentChance } from 'e';
+import { formatOrdinal, SimpleTable } from '@oldschoolgg/toolkit';
+import { clamp, percentChance, sumArr } from 'e';
 
 import { Emoji } from '../../../lib/constants';
 import { prisma } from '../../../lib/settings/prisma';
 import { incrementMinigameScore } from '../../../lib/settings/settings';
-import { MinigameActivityTaskOptions } from '../../../lib/types/minions';
-import { addArrayOfNumbers, calcPerHour, gaussianRandom } from '../../../lib/util';
-import { formatOrdinal } from '../../../lib/util/formatOrdinal';
+import { MinigameActivityTaskOptionsWithNoChanges } from '../../../lib/types/minions';
+import { calcPerHour, gaussianRandom } from '../../../lib/util';
 import { handleTripFinish } from '../../../lib/util/handleTripFinish';
 
 interface LMSGameSimulated {
@@ -59,7 +58,7 @@ const extraEncountersTable = new SimpleTable<number>()
 	.add(6, 3)
 	.add(7, 1);
 
-function calculateResultOfLMSGames(qty: number, lmsStats: Awaited<ReturnType<typeof getUsersLMSStats>>) {
+export function calculateResultOfLMSGames(qty: number, lmsStats: Awaited<ReturnType<typeof getUsersLMSStats>>) {
 	const gameResults: LMSGameSimulated[] = [];
 
 	// 0 at 0kc, 1 at 120kc
@@ -98,7 +97,7 @@ function calculateResultOfLMSGames(qty: number, lmsStats: Awaited<ReturnType<typ
 
 export const lmsTask: MinionTask = {
 	type: 'LastManStanding',
-	async run(data: MinigameActivityTaskOptions) {
+	async run(data: MinigameActivityTaskOptionsWithNoChanges) {
 		const { channelID, quantity, userID, duration } = data;
 		const user = await mUserFetch(userID);
 		await incrementMinigameScore(userID, 'lms', quantity);
@@ -109,13 +108,14 @@ export const lmsTask: MinionTask = {
 		await prisma.lastManStandingGame.createMany({
 			data: result.map(i => ({ ...i, user_id: BigInt(user.id), points: undefined }))
 		});
-		const points = addArrayOfNumbers(result.map(i => i.points));
+		const points = sumArr(result.map(i => i.points));
 
 		const { newUser } = await user.update({
 			lms_points: {
 				increment: points
 			}
 		});
+		const newLmsStats = await getUsersLMSStats(user);
 
 		handleTripFinish(
 			user,
@@ -124,7 +124,10 @@ export const lmsTask: MinionTask = {
 				user.minionName
 			} finished playing ${quantity}x Last Man Standing matches, you received ${points} points and now have ${
 				newUser.lms_points
-			} points in total. ${calcPerHour(points, duration).toFixed(2)} points/hr
+			} points in total, and have won a total of ${newLmsStats.gamesWon}x games. ${calcPerHour(
+				points,
+				duration
+			).toFixed(2)} points/hr
 ${result
 	.map(
 		(i, inde) =>

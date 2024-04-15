@@ -1,17 +1,34 @@
+import { Giveaway } from '@prisma/client';
 import { Duration } from '@sapphire/time-utilities';
-import { ActionRowBuilder, AttachmentBuilder, BaseMessageOptions, ButtonBuilder, ButtonStyle } from 'discord.js';
+import {
+	ActionRowBuilder,
+	AttachmentBuilder,
+	BaseMessageOptions,
+	ButtonBuilder,
+	ButtonStyle,
+	ChannelType,
+	EmbedBuilder,
+	messageLink,
+	time
+} from 'discord.js';
 import { randInt, Time } from 'e';
 import { ApplicationCommandOptionType, CommandRunOptions } from 'mahoji';
+import { Bank } from 'oldschooljs';
+import { ItemBank } from 'oldschooljs/dist/meta/types';
 
-import { addToGPTaxBalance, prisma } from '../../lib/settings/prisma';
-import { channelIsSendable, isModOrAdmin, makeComponents } from '../../lib/util';
+import { Emoji, patronFeatures } from '../../lib/constants';
+import { marketPriceOfBank } from '../../lib/marketPrices';
+import { prisma } from '../../lib/settings/prisma';
+import { channelIsSendable, isModOrAdmin, makeComponents, toKMB } from '../../lib/util';
 import { generateGiveawayContent } from '../../lib/util/giveaway';
 import { handleMahojiConfirmation } from '../../lib/util/handleMahojiConfirmation';
+import itemIsTradeable from '../../lib/util/itemIsTradeable';
 import { logError } from '../../lib/util/logError';
 import { makeBankImage } from '../../lib/util/makeBankImage';
 import { parseBank } from '../../lib/util/parseStringBank';
 import { filterOption } from '../lib/mahojiCommandOptions';
 import { OSBMahojiCommand } from '../lib/util';
+import { addToGPTaxBalance } from '../mahojiSettings';
 
 function makeGiveawayButtons(giveawayID: number): BaseMessageOptions['components'] {
 	return [
@@ -69,6 +86,12 @@ export const giveawayCommand: OSBMahojiCommand = {
 					required: false
 				}
 			]
+		},
+		{
+			type: ApplicationCommandOptionType.Subcommand,
+			name: 'list',
+			description: 'List giveaways active in this server.',
+			options: []
 		}
 	],
 	run: async ({
@@ -78,7 +101,10 @@ export const giveawayCommand: OSBMahojiCommand = {
 		interaction,
 		channelID,
 		user: apiUser
-	}: CommandRunOptions<{ start?: { duration: string; items?: string; filter?: string; search?: string } }>) => {
+	}: CommandRunOptions<{
+		start?: { duration: string; items?: string; filter?: string; search?: string };
+		list?: {};
+	}>) => {
 		const user = await mUserFetch(userID);
 		if (user.isIronman) return 'You cannot do giveaways!';
 		const channel = globalClient.channels.cache.get(channelID.toString());
@@ -101,7 +127,7 @@ export const giveawayCommand: OSBMahojiCommand = {
 
 			const bank = parseBank({
 				inputStr: options.start.items,
-				inputBank: user.bank,
+				inputBank: user.bankWithGP,
 				excludeItems: user.user.favoriteItems,
 				user,
 				search: options.start.search,
@@ -109,11 +135,11 @@ export const giveawayCommand: OSBMahojiCommand = {
 				maxSize: 70
 			});
 
-			if (!user.bank.has(bank)) {
+			if (!user.bankWithGP.has(bank)) {
 				return "You don't own those items.";
 			}
 
-			if (bank.items().some(i => !i[0].tradeable)) {
+			if (bank.items().some(i => !itemIsTradeable(i[0].id, true))) {
 				return "You can't giveaway untradeable items.";
 			}
 
@@ -131,7 +157,7 @@ export const giveawayCommand: OSBMahojiCommand = {
 			}
 
 			await user.sync();
-			if (!user.bank.has(bank)) {
+			if (!user.bankWithGP.has(bank)) {
 				return "You don't own those items.";
 			}
 
@@ -139,7 +165,7 @@ export const giveawayCommand: OSBMahojiCommand = {
 				return 'You cannot have a giveaway with no items in it.';
 			}
 
-			const giveawayID = randInt(1, 100_000_000);
+			const giveawayID = randInt(1, 500_000_000);
 
 			const message = await channel.send({
 				content: generateGiveawayContent(user.id, duration.fromNow, []),
@@ -192,6 +218,63 @@ export const giveawayCommand: OSBMahojiCommand = {
 				content: 'Giveaway started.',
 				ephemeral: true,
 				components: makeComponents([makeGiveawayRepeatButton(giveawayID)])
+			};
+		}
+
+		if (options.list) {
+			if (!guildID) {
+				return 'You cannot list giveaways outside a server.';
+			}
+			const guild = globalClient.guilds.cache.get(guildID);
+			if (!guild) return;
+
+			const textChannelsOfThisServer = guild.channels.cache
+				.filter(c => c.type === ChannelType.GuildText)
+				.map(i => i.id);
+
+			const giveaways = await prisma.giveaway.findMany({
+				where: {
+					channel_id: {
+						in: textChannelsOfThisServer
+					},
+					completed: false
+				},
+				orderBy: {
+					finish_date: 'asc'
+				}
+			});
+
+			if (giveaways.length === 0) {
+				return 'There are no active giveaways in this server.';
+			}
+
+			function getEmoji(giveaway: Giveaway) {
+				if (giveaway.user_id === user.id || giveaway.users_entered.includes(user.id)) {
+					return Emoji.Green;
+				}
+				return Emoji.RedX;
+			}
+
+			return {
+				embeds: [
+					new EmbedBuilder().setDescription(
+						giveaways
+							.map(
+								g =>
+									`${
+										user.perkTier() >= patronFeatures.ShowEnteredInGiveawayList.tier
+											? `${getEmoji(g)} `
+											: ''
+									}[${toKMB(marketPriceOfBank(new Bank(g.loot as ItemBank)))} giveaway ending ${time(
+										g.finish_date,
+										'R'
+									)}](${messageLink(g.channel_id, g.message_id)})`
+							)
+							.slice(0, 30)
+							.join('\n')
+					)
+				],
+				ephemeral: true
 			};
 		}
 	}

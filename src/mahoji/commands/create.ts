@@ -1,45 +1,24 @@
+import { readFileSync } from 'fs';
 import { ApplicationCommandOptionType, CommandRunOptions } from 'mahoji';
 import { Bank } from 'oldschooljs';
-import { table } from 'table';
 
 import Createables from '../../lib/data/createables';
-import { gotFavour } from '../../lib/minions/data/kourendFavour';
 import { SkillsEnum } from '../../lib/skilling/types';
 import { SlayerTaskUnlocksEnum } from '../../lib/slayer/slayerUnlocks';
 import { hasSlayerUnlock } from '../../lib/slayer/slayerUtil';
 import { stringMatches } from '../../lib/util';
 import { handleMahojiConfirmation } from '../../lib/util/handleMahojiConfirmation';
-import { deferInteraction } from '../../lib/util/interactionReply';
 import { updateBankSetting } from '../../lib/util/updateBankSetting';
 import { OSBMahojiCommand } from '../lib/util';
 import { userStatsBankUpdate } from '../mahojiSettings';
 
-function showAllCreatables() {
-	let content = 'This are the items that you can create:';
-	const creatableTable = table([
-		['Item name', 'Input Items', 'Output Items', 'GP Cost', 'Skills Required', 'QP Required'],
-		...Createables.map(i => {
-			return [
-				i.name,
-				`${new Bank(i.inputItems)}`,
-				`${new Bank(i.outputItems)}`,
-				`${i.GPCost ?? 0}`,
-				`${
-					i.requiredSkills === undefined
-						? ''
-						: Object.entries(i.requiredSkills)
-								.map(entry => `${entry[0]}: ${entry[1]}`)
-								.join('\n')
-				}`,
-				`${i.QPRequired ?? ''}`
-			];
-		})
-	]);
-	return {
-		content,
-		files: [{ attachment: Buffer.from(creatableTable), name: 'Creatables.txt' }]
-	};
-}
+const creatablesTable = readFileSync('./src/lib/data/creatablesTable.txt', 'utf8');
+
+let content = 'Theses are the items that you can create:';
+const allCreatablesTable = {
+	content,
+	files: [{ attachment: Buffer.from(creatablesTable), name: 'Creatables.txt' }]
+};
 
 export const createCommand: OSBMahojiCommand = {
 	name: 'create',
@@ -84,8 +63,7 @@ export const createCommand: OSBMahojiCommand = {
 		const itemName = options.item.toLowerCase();
 		let { quantity } = options;
 		if (options.showall) {
-			await deferInteraction(interaction);
-			return showAllCreatables();
+			return allCreatablesTable;
 		}
 
 		const createableItem = Createables.find(item => stringMatches(item.name, itemName));
@@ -124,21 +102,6 @@ export const createCommand: OSBMahojiCommand = {
 				return `You don't have the required Slayer Unlocks to ${action} this item.\n\nRequired: ${errors}`;
 			}
 		}
-		if (createableItem.requiredFavour) {
-			const [success, points] = gotFavour(user, createableItem.requiredFavour, 100);
-			if (!success) {
-				return `You don't have the required amount of Favour to ${action} this item.\n\nRequired: ${points}% ${createableItem.requiredFavour.toString()} Favour.`;
-			}
-		}
-
-		if (createableItem.name.toLowerCase().includes('kourend')) {
-			const currentUserFavour = user.kourendFavour;
-			for (const [key, value] of Object.entries(currentUserFavour)) {
-				if (value < 100) {
-					return `You don't have the required amount of Favour to ${action} this item.\n\nRequired: 100% ${key} Favour.`;
-				}
-			}
-		}
 
 		if (createableItem.GPCost && user.GP < createableItem.GPCost * quantity) {
 			return `You need ${createableItem.GPCost.toLocaleString()} coins to ${action} this item.`;
@@ -151,7 +114,7 @@ export const createCommand: OSBMahojiCommand = {
 			}
 		}
 		if (createableItem.maxCanOwn) {
-			const allItems = user.allItemsOwned();
+			const allItems = user.allItemsOwned;
 			const amountOwned = allItems.amount(createableItem.name);
 			if (amountOwned >= createableItem.maxCanOwn) {
 				return `You already have ${amountOwned}x ${createableItem.name}, you can't create another.`;
@@ -168,7 +131,7 @@ export const createCommand: OSBMahojiCommand = {
 
 		// Check for any items they cant have 2 of.
 		if (createableItem.cantHaveItems) {
-			const allItemsOwnedBank = user.allItemsOwned();
+			const allItemsOwnedBank = user.allItemsOwned;
 			for (const [itemID, qty] of Object.entries(createableItem.cantHaveItems)) {
 				const numOwned = allItemsOwnedBank.amount(Number(itemID));
 				if (numOwned >= qty) {

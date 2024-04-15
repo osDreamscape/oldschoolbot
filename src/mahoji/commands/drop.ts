@@ -1,13 +1,12 @@
 import { ApplicationCommandOptionType, CommandRunOptions } from 'mahoji';
 
 import { ClueTiers } from '../../lib/clues/clueTiers';
-import { itemNameFromID } from '../../lib/util';
+import { ellipsize, itemNameFromID, returnStringOrFile } from '../../lib/util';
 import { handleMahojiConfirmation } from '../../lib/util/handleMahojiConfirmation';
 import { parseBank } from '../../lib/util/parseStringBank';
 import { updateBankSetting } from '../../lib/util/updateBankSetting';
 import { filterOption } from '../lib/mahojiCommandOptions';
 import { OSBMahojiCommand } from '../lib/util';
-import { mahojiUsersSettingsFetch } from '../mahojiSettings';
 
 export const dropCommand: OSBMahojiCommand = {
 	name: 'drop',
@@ -39,11 +38,10 @@ export const dropCommand: OSBMahojiCommand = {
 			return "You didn't provide any items, filter or search.";
 		}
 		const user = await mUserFetch(userID);
-		const mUser = await mahojiUsersSettingsFetch(userID, { favoriteItems: true });
 		const bank = parseBank({
 			inputStr: options.items,
 			inputBank: user.bank,
-			excludeItems: mUser.favoriteItems,
+			excludeItems: user.user.favoriteItems,
 			user,
 			search: options.search,
 			filters: [options.filter],
@@ -68,23 +66,25 @@ export const dropCommand: OSBMahojiCommand = {
 		].flat(1);
 		const doubleCheckItems = itemsToDoubleCheck.filter(f => bank.has(f));
 
+		await handleMahojiConfirmation(
+			interaction,
+			`${user}, are you sure you want to drop ${ellipsize(
+				bank.toString(),
+				1800
+			)}? This is irreversible, and you will lose the items permanently.`
+		);
 		if (doubleCheckItems.length > 0) {
 			await handleMahojiConfirmation(
 				interaction,
-				`${user}, some of the items you are dropping look valuable, are you *really* sure you want to drop them? **${doubleCheckItems
+				`${user}, some of the items you are dropping are on your **favorites** or look valuable, are you *really* sure you want to drop them?\n**${doubleCheckItems
 					.map(itemNameFromID)
-					.join(', ')}**`
-			);
-		} else {
-			await handleMahojiConfirmation(
-				interaction,
-				`${user}, are you sure you want to drop ${bank}? This is irreversible, and you will lose the items permanently.`
+					.join(', ')}**\n\nDropping: ${ellipsize(bank.toString(), 1000)}`
 			);
 		}
 
 		await user.removeItemsFromBank(bank);
 		updateBankSetting('dropped_items', bank);
 
-		return `Dropped ${bank}.`;
+		return returnStringOrFile(`Dropped ${bank}.`);
 	}
 };

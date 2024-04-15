@@ -1,10 +1,11 @@
+import { toTitleCase } from '@oldschoolgg/toolkit';
 import { ApplicationCommandOptionType, CommandRunOptions } from 'mahoji';
 import { Bank, Monsters } from 'oldschooljs';
 
 import { PerkTier } from '../../lib/constants';
+import { simulatedKillables } from '../../lib/simulation/simulatedKillables';
 import { deferInteraction } from '../../lib/util/interactionReply';
 import { makeBankImage } from '../../lib/util/makeBankImage';
-import { toTitleCase } from '../../lib/util/toTitleCase';
 import { Workers } from '../../lib/workers';
 import { OSBMahojiCommand } from '../lib/util';
 
@@ -50,10 +51,13 @@ export const killCommand: OSBMahojiCommand = {
 			autocomplete: async (value: string) => {
 				return [
 					...Monsters.map(i => ({ name: i.name, aliases: i.aliases })),
+					...simulatedKillables.map(i => ({ name: i.name, aliases: [i.name] })),
 					{ name: 'nex', aliases: ['nex'] },
 					{ name: 'nightmare', aliases: ['nightmare'] }
 				]
-					.filter(i => (!value ? true : i.aliases.some(alias => alias.includes(value.toLowerCase()))))
+					.filter(i =>
+						!value ? true : i.aliases.some(alias => alias.toLowerCase().includes(value.toLowerCase()))
+					)
 					.map(i => ({
 						name: i.name,
 						value: i.name
@@ -70,14 +74,15 @@ export const killCommand: OSBMahojiCommand = {
 	],
 	run: async ({ options, userID, interaction }: CommandRunOptions<{ name: string; quantity: number }>) => {
 		const user = await mUserFetch(userID);
-		deferInteraction(interaction);
+		await deferInteraction(interaction);
 
 		const result = await Workers.kill({
 			quantity: options.quantity,
 			bossName: options.name,
 			limit: determineKillLimit(user),
 			catacombs: false,
-			onTask: false
+			onTask: false,
+			lootTableTertiaryChanges: Array.from(user.buildCATertiaryItemChanges().entries())
 		});
 
 		if (result.error) {

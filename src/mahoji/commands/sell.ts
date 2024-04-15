@@ -7,32 +7,45 @@ import { Item, ItemBank } from 'oldschooljs/dist/meta/types';
 import { MAX_INT_JAVA } from '../../lib/constants';
 import { prisma } from '../../lib/settings/prisma';
 import { NestBoxesTable } from '../../lib/simulation/misc';
-import { itemID, toKMB } from '../../lib/util';
+import { itemID, returnStringOrFile, toKMB } from '../../lib/util';
 import { handleMahojiConfirmation } from '../../lib/util/handleMahojiConfirmation';
 import { parseBank } from '../../lib/util/parseStringBank';
 import { updateBankSetting } from '../../lib/util/updateBankSetting';
 import { filterOption } from '../lib/mahojiCommandOptions';
 import { OSBMahojiCommand } from '../lib/util';
-import { updateGPTrackSetting, userStatsUpdate } from '../mahojiSettings';
+import { updateClientGPTrackSetting, userStatsUpdate } from '../mahojiSettings';
 
 /**
  * - Hardcoded prices
  * - Can be sold by ironmen
  */
 const specialSoldItems = new Map([
+	// Emblem Trader Items
 	[itemID('Ancient emblem'), 500_000],
 	[itemID('Ancient totem'), 1_000_000],
 	[itemID('Ancient statuette'), 2_000_000],
 	[itemID('Ancient medallion'), 4_000_000],
 	[itemID('Ancient effigy'), 8_000_000],
-	[itemID('Ancient relic'), 16_000_000]
+	[itemID('Ancient relic'), 16_000_000],
+	// Simon Templeton Items
+	[itemID('Ivory comb'), 50],
+	[itemID('Pottery scarab'), 75],
+	[itemID('Stone seal'), 100],
+	[itemID('Stone scarab'), 175],
+	[itemID('Stone statuette'), 200],
+	[itemID('Gold seal'), 750],
+	[itemID('Golden scarab'), 1000],
+	[itemID('Golden statuette'), 1250]
 ]);
 
 export const CUSTOM_PRICE_CACHE = new Map<number, number>();
 
 export function sellPriceOfItem(item: Item, taxRate = 20): { price: number; basePrice: number } {
-	if (!item.price || !item.tradeable) return { price: 0, basePrice: 0 };
-	let basePrice = CUSTOM_PRICE_CACHE.get(item.id) ?? item.price;
+	let cachePrice = CUSTOM_PRICE_CACHE.get(item.id);
+	if (!cachePrice && (item.price === undefined || !item.tradeable)) {
+		return { price: 0, basePrice: 0 };
+	}
+	let basePrice = cachePrice ?? item.price;
 	let price = basePrice;
 	price = reduceNumByPercent(price, taxRate);
 	price = clamp(price, 0, MAX_INT_JAVA);
@@ -100,11 +113,10 @@ export const sellCommand: OSBMahojiCommand = {
 			for (let i = 0; i < moleBank.amount('Mole claw') + moleBank.amount('Mole skin'); i++) {
 				loot.add(NestBoxesTable.roll());
 			}
-			await user.removeItemsFromBank(moleBank);
-			await transactItems({
-				userID: user.id,
+			await user.transactItems({
 				collectionLog: true,
-				itemsToAdd: loot
+				itemsToAdd: loot,
+				itemsToRemove: moleBank
 			});
 			return `You exchanged ${moleBank} and received: ${loot}.`;
 		}
@@ -139,13 +151,55 @@ export const sellCommand: OSBMahojiCommand = {
 				`${user}, please confirm you want to sell ${abbyBank} for **${loot}**.`
 			);
 
-			await user.removeItemsFromBank(abbyBank);
-			await transactItems({
-				userID: user.id,
+			await user.transactItems({
 				collectionLog: false,
-				itemsToAdd: loot
+				itemsToAdd: loot,
+				itemsToRemove: abbyBank
 			});
 			return `You exchanged ${abbyBank} and received: ${loot}.`;
+		}
+
+		if (
+			bankToSell.has('Golden pheasant egg') ||
+			bankToSell.has('Fox whistle') ||
+			bankToSell.has('Petal garland') ||
+			bankToSell.has('Pheasant tail feathers') ||
+			bankToSell.has('Sturdy beehive parts')
+		) {
+			const forestryBank = new Bank();
+			const loot = new Bank();
+			if (bankToSell.has('Golden pheasant egg')) {
+				forestryBank.add('Golden pheasant egg', bankToSell.amount('Golden pheasant egg'));
+				loot.add('Anima-infused bark', bankToSell.amount('Golden pheasant egg') * 250);
+			}
+			if (bankToSell.has('Fox whistle')) {
+				forestryBank.add('Fox whistle', bankToSell.amount('Fox whistle'));
+				loot.add('Anima-infused bark', bankToSell.amount('Fox whistle') * 250);
+			}
+			if (bankToSell.has('Petal garland')) {
+				forestryBank.add('Petal garland', bankToSell.amount('Petal garland'));
+				loot.add('Anima-infused bark', bankToSell.amount('Petal garland') * 150);
+			}
+			if (bankToSell.has('Pheasant tail feathers')) {
+				forestryBank.add('Pheasant tail feathers', bankToSell.amount('Pheasant tail feathers'));
+				loot.add('Anima-infused bark', bankToSell.amount('Pheasant tail feathers') * 5);
+			}
+			if (bankToSell.has('Sturdy beehive parts')) {
+				forestryBank.add('Sturdy beehive parts', bankToSell.amount('Sturdy beehive parts'));
+				loot.add('Anima-infused bark', bankToSell.amount('Sturdy beehive parts') * 25);
+			}
+
+			await handleMahojiConfirmation(
+				interaction,
+				`${user}, please confirm you want to sell ${forestryBank} for **${loot}**.`
+			);
+
+			await user.transactItems({
+				collectionLog: false,
+				itemsToAdd: loot,
+				itemsToRemove: forestryBank
+			});
+			return `You exchanged ${forestryBank} and received: ${loot}.`;
 		}
 
 		if (bankToSell.has('Golden tench')) {
@@ -159,13 +213,13 @@ export const sellCommand: OSBMahojiCommand = {
 				interaction,
 				`${user}, please confirm you want to sell ${tenchBank} for **${loot}**.`
 			);
-			await user.removeItemsFromBank(tenchBank);
-			await user.addItemsToBank({ items: loot, collectionLog: false });
+
+			await user.transactItems({ itemsToRemove: tenchBank, itemsToAdd: loot });
 			return `You exchanged ${tenchBank} and received: ${loot}.`;
 		}
 
 		let totalPrice = 0;
-		const taxRatePercent = 20;
+		const taxRatePercent = 25;
 
 		const botItemSellData: Prisma.BotItemSellCreateManyInput[] = [];
 
@@ -196,6 +250,11 @@ export const sellCommand: OSBMahojiCommand = {
 			)}).`
 		);
 
+		await user.sync();
+		if (!user.owns(bankToSell)) {
+			return "You don't have the items you're trying to sell.";
+		}
+
 		await transactItems({
 			userID: user.id,
 			itemsToAdd: new Bank().add('Coins', totalPrice),
@@ -203,19 +262,25 @@ export const sellCommand: OSBMahojiCommand = {
 		});
 
 		await Promise.all([
-			updateGPTrackSetting('gp_sell', totalPrice),
+			updateClientGPTrackSetting('gp_sell', totalPrice),
 			updateBankSetting('sold_items_bank', bankToSell),
-			userStatsUpdate(user.id, userStats => ({
-				items_sold_bank: new Bank(userStats.items_sold_bank as ItemBank).add(bankToSell).bank,
-				sell_gp: {
-					increment: totalPrice
-				}
-			})),
+			userStatsUpdate(
+				user.id,
+				userStats => ({
+					items_sold_bank: new Bank(userStats.items_sold_bank as ItemBank).add(bankToSell).bank,
+					sell_gp: {
+						increment: totalPrice
+					}
+				}),
+				{}
+			),
 			prisma.botItemSell.createMany({ data: botItemSellData })
 		]);
 
-		return `Sold ${bankToSell} for **${totalPrice.toLocaleString()}gp (${toKMB(totalPrice)})**${
-			user.isIronman ? ' (General store price)' : ` (${taxRatePercent}% below market price)`
-		}.`;
+		return returnStringOrFile(
+			`Sold ${bankToSell} for **${totalPrice.toLocaleString()}gp (${toKMB(totalPrice)})**${
+				user.isIronman ? ' (General store price)' : ` (${taxRatePercent}% below market price)`
+			}.`
+		);
 	}
 };

@@ -1,7 +1,10 @@
+import { isMainThread } from 'node:worker_threads';
+
 import { Activity, activity_type_enum, Prisma, PrismaClient } from '@prisma/client';
 
-import { CLIENT_ID, production } from '../../config';
+import { production } from '../../config';
 import { ActivityTaskData } from '../types/minions';
+import { sqlLog } from '../util/logger';
 
 declare global {
 	namespace NodeJS {
@@ -12,7 +15,8 @@ declare global {
 }
 
 function makePrismaClient(): PrismaClient {
-	if (!production) console.log('Making prisma client...');
+	if (!isMainThread && !process.env.TEST) return null as any;
+	if (!production && !process.env.TEST) console.log('Making prisma client...');
 	return new PrismaClient({
 		log: [
 			{
@@ -26,15 +30,18 @@ function makePrismaClient(): PrismaClient {
 export const prisma = global.prisma || makePrismaClient();
 global.prisma = prisma;
 
-export const prismaQueries: Prisma.QueryEvent[] = [];
 export let queryCountStore = { value: 0 };
-prisma.$on('query' as any, (_query: any) => {
-	if (!production && globalClient.isReady()) {
+
+if (isMainThread) {
+	// @ts-ignore ignore
+	prisma.$on('query' as any, (_query: any) => {
 		const query = _query as Prisma.QueryEvent;
-		prismaQueries.push(query);
-	}
-	queryCountStore.value++;
-});
+		if (!production) {
+			sqlLog(query.query);
+		}
+		queryCountStore.value++;
+	});
+}
 
 export function convertStoredActivityToFlatActivity(activity: Activity): ActivityTaskData {
 	return {
@@ -45,14 +52,14 @@ export function convertStoredActivityToFlatActivity(activity: Activity): Activit
 		duration: activity.duration,
 		finishDate: activity.finish_date.getTime(),
 		id: activity.id
-	};
+	} as ActivityTaskData;
 }
 
 /**
  * ⚠️ Uses queryRawUnsafe
  */
 export async function countUsersWithItemInCl(itemID: number, ironmenOnly: boolean) {
-	const query = `SELECT COUNT(id)
+	const query = `SELECT COUNT(id)::int
 				   FROM users
 				   WHERE ("collectionLogBank"->>'${itemID}') IS NOT NULL 
 				   AND ("collectionLogBank"->>'${itemID}')::int >= 1
@@ -64,27 +71,18 @@ export async function countUsersWithItemInCl(itemID: number, ironmenOnly: boolea
 	return result;
 }
 
-export async function addToGPTaxBalance(userID: string | string, amount: number) {
-	await Promise.all([
-		prisma.clientStorage.update({
-			where: {
-				id: CLIENT_ID
-			},
-			data: {
-				gp_tax_balance: {
-					increment: amount
-				}
-			}
-		}),
-		prisma.user.update({
-			where: {
-				id: userID.toString()
-			},
-			data: {
-				total_gp_traded: {
-					increment: amount
-				}
-			}
-		})
-	]);
+export async function getUsersActivityCounts(user: MUser) {
+	const counts = await prisma.$queryRaw<{ type: activity_type_enum; count: bigint }[]>`SELECT type, COUNT(type)
+FROM activity
+WHERE user_id = ${BigInt(user.id)}
+GROUP BY type;`;
+
+	let result: Record<activity_type_enum, number> = {} as Record<activity_type_enum, number>;
+	for (const type of Object.values(activity_type_enum)) {
+		result[type] = 0;
+	}
+	for (const { count, type } of counts) {
+		result[type] = Number(count);
+	}
+	return result;
 }

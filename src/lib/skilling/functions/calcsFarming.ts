@@ -1,8 +1,8 @@
-import { Favours, gotFavour } from '../../minions/data/kourendFavour';
-import { rand } from '../../util';
+import { randInt } from 'e';
+
 import { Plant, SkillsEnum } from '../types';
 
-export function calcNumOfPatches(plant: Plant, user: MUser, qp: number): [number, string | undefined] {
+export function calcNumOfPatches(plant: Plant, user: MUser, qp: number): [number] {
 	let numOfPatches = plant.defaultNumOfPatches;
 	const farmingLevel = user.skillLevel(SkillsEnum.Farming);
 	const questPoints = qp;
@@ -13,13 +13,7 @@ export function calcNumOfPatches(plant: Plant, user: MUser, qp: number): [number
 			break;
 		}
 	}
-	let errorMessage: string | undefined = undefined;
 	for (let i = plant.additionalPatchesByFarmGuildAndLvl.length; i > 0; i--) {
-		const [hasFavour, requiredPoints] = gotFavour(user, Favours.Hosidius, 60);
-		if (!hasFavour) {
-			errorMessage = `${user.minionName} needs ${requiredPoints}% Hosidius Favour to use Farming guild patches.`;
-			break;
-		}
 		const [farmingLevelReq, additionalPatches] = plant.additionalPatchesByFarmGuildAndLvl[i - 1];
 		if (farmingLevel >= farmingLevelReq) {
 			numOfPatches += additionalPatches;
@@ -33,7 +27,7 @@ export function calcNumOfPatches(plant: Plant, user: MUser, qp: number): [number
 			break;
 		}
 	}
-	return [numOfPatches, errorMessage];
+	return [numOfPatches];
 }
 
 export function calcVariableYield(
@@ -49,14 +43,14 @@ export function calcVariableYield(
 		for (let i = plant.variableOutputAmount.length; i > 0; i--) {
 			const [upgradeTypeNeeded, min, max] = plant.variableOutputAmount[i - 1];
 			if (upgradeType === upgradeTypeNeeded) {
-				cropYield += rand(min, max);
+				cropYield += randInt(min, max);
 				cropYield *= quantityAlive;
 				break;
 			}
 		}
 	} else if (plant.name === 'Limpwurt' || plant.name === 'Belladonna') {
 		for (let i = 0; i < quantityAlive; i++) {
-			cropYield += 3 + rand(1, Math.floor(farmingLevel / 10));
+			cropYield += 3 + randInt(1, Math.floor(farmingLevel / 10));
 		}
 	}
 

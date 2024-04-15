@@ -1,54 +1,56 @@
+import { gzip } from 'node:zlib';
+
+import { stripEmojis } from '@oldschoolgg/toolkit';
 import { Stopwatch } from '@sapphire/stopwatch';
+import { createHash } from 'crypto';
 import {
 	BaseMessageOptions,
 	ButtonBuilder,
 	ButtonInteraction,
 	CacheType,
-	Channel,
 	Collection,
 	CollectorFilter,
 	ComponentType,
 	escapeMarkdown,
 	Guild,
-	GuildTextBasedChannel,
 	InteractionReplyOptions,
 	InteractionType,
 	Message,
 	MessageEditOptions,
 	SelectMenuInteraction,
-	TextChannel,
-	time,
-	User as DJSUser
+	TextChannel
 } from 'discord.js';
-import { chunk, isObject, objectEntries, Time } from 'e';
+import { chunk, notEmpty, objectEntries, Time } from 'e';
 import { CommandResponse } from 'mahoji/dist/lib/structures/ICommand';
 import murmurHash from 'murmurhash';
-import { gzip } from 'node:zlib';
 import { Bank } from 'oldschooljs';
-import { ItemBank } from 'oldschooljs/dist/meta/types';
 import { bool, integer, nodeCrypto, real } from 'random-js';
 
 import { ADMIN_IDS, OWNER_IDS, SupportServer } from '../config';
-import { badgesCache, BitField, usernameCache } from './constants';
+import { ClueTiers } from './clues/clueTiers';
+import { badgesCache, BitField, projectiles, usernameCache } from './constants';
+import { UserStatsDataNeededForCL } from './data/Collections';
+import { getSimilarItems } from './data/similarItems';
 import { DefenceGearStat, GearSetupType, GearSetupTypes, GearStat, OffenceGearStat } from './gear/types';
 import type { Consumable } from './minions/types';
 import { MUserClass } from './MUser';
 import { PaginatedMessage } from './PaginatedMessage';
 import type { POHBoosts } from './poh';
 import { SkillsEnum } from './skilling/types';
-import type { Skills } from './types';
+import { Gear } from './structures/Gear';
+import { MUserStats } from './structures/MUserStats';
+import type { ItemBank, Skills } from './types';
 import type {
 	GroupMonsterActivityTaskOptions,
 	NexTaskOptions,
 	RaidsOptions,
 	TheatreOfBloodTaskOptions
 } from './types/minions';
-import { getItem } from './util/getOSItem';
+import getOSItem, { getItem } from './util/getOSItem';
 import itemID from './util/itemID';
+import { itemNameFromID } from './util/smallUtils';
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const emojiRegex = require('emoji-regex');
-
+export { cleanString, stringMatches, stripEmojis } from '@oldschoolgg/toolkit';
 export * from 'oldschooljs/dist/util/index';
 
 const zeroWidthSpace = '\u200b';
@@ -78,27 +80,6 @@ export function cleanMentions(guild: Guild | null, input: string, showAt = true)
 		});
 }
 
-export function generateHexColorForCashStack(coins: number) {
-	if (coins > 9_999_999) {
-		return '#00FF80';
-	}
-
-	if (coins > 99_999) {
-		return '#FFFFFF';
-	}
-
-	return '#FFFF00';
-}
-
-export function formatItemStackQuantity(quantity: number) {
-	if (quantity > 9_999_999) {
-		return `${Math.floor(quantity / 1_000_000)}M`;
-	} else if (quantity > 99_999) {
-		return `${Math.floor(quantity / 1000)}K`;
-	}
-	return quantity.toString();
-}
-
 export function isWeekend() {
 	const currentDate = new Date(Date.now() - Time.Hour * 6);
 	return [6, 0].includes(currentDate.getDay());
@@ -118,7 +99,7 @@ export function convertXPtoLVL(xp: number, cap = 99) {
 	return cap;
 }
 
-export function rand(min: number, max: number) {
+export function cryptoRand(min: number, max: number) {
 	return integer(min, max)(nodeCrypto);
 }
 
@@ -131,13 +112,7 @@ export function percentChance(percent: number) {
 }
 
 export function roll(max: number) {
-	return rand(1, max) === 1;
-}
-
-const rawEmojiRegex = emojiRegex();
-
-export function stripEmojis(str: string) {
-	return str.replace(rawEmojiRegex, '');
+	return cryptoRand(1, max) === 1;
 }
 
 export const anglerBoosts = [
@@ -243,15 +218,18 @@ export function formatItemCosts(consumable: Consumable, timeToFinish: number) {
 	return str.join('');
 }
 
-export function formatMissingItems(consumables: Consumable[], timeToFinish: number) {
-	const str = [];
-
-	for (const consumable of consumables) {
-		str.push(formatItemCosts(consumable, timeToFinish));
+export const calculateTripConsumableCost = (c: Consumable, quantity: number, duration: number) => {
+	const consumableCost = c.itemCost.clone();
+	if (c.qtyPerKill) {
+		consumableCost.multiply(quantity);
+	} else if (c.qtyPerMinute) {
+		consumableCost.multiply(duration / Time.Minute);
 	}
-
-	return str.join(', ');
-}
+	for (const [item, qty] of Object.entries(consumableCost.bank)) {
+		consumableCost.bank[item] = Math.ceil(qty);
+	}
+	return consumableCost;
+};
 
 export function formatPohBoosts(boosts: POHBoosts) {
 	const bonusStr = [];
@@ -282,13 +260,13 @@ export function gaussianRandom(min: number, max: number, rolls?: number) {
 }
 
 export function isValidNickname(str?: string) {
-	return (
+	return Boolean(
 		str &&
-		typeof str === 'string' &&
-		str.length >= 2 &&
-		str.length <= 30 &&
-		['\n', '`', '@', '<', ':'].every(char => !str.includes(char)) &&
-		stripEmojis(str).length === str.length
+			typeof str === 'string' &&
+			str.length >= 2 &&
+			str.length <= 30 &&
+			['\n', '`', '@', '<', ':'].every(char => !str.includes(char)) &&
+			stripEmojis(str).length === str.length
 	);
 }
 
@@ -306,6 +284,12 @@ export function convertPercentChance(percent: number) {
 export function murMurHashChance(input: string, percent: number) {
 	const hash = murmurHash.v3(input) % 1e4;
 	return hash < percent * 100;
+}
+
+const getMurKey = (input: string | number, sortHash: string) => `${input.toString()}-${sortHash}`;
+
+export function murMurSort<T extends string | number>(arr: T[], sortHash: string) {
+	return [...arr].sort((a, b) => murmurHash.v3(getMurKey(b, sortHash)) - murmurHash.v3(getMurKey(a, sortHash)));
 }
 
 export function convertAttackStyleToGearSetup(style: OffenceGearStat | DefenceGearStat) {
@@ -353,6 +337,28 @@ export function sanitizeBank(bank: Bank) {
 		}
 	}
 }
+
+export function validateBankAndThrow(bank: Bank) {
+	if (!bank || typeof bank !== 'object') {
+		throw new Error('Invalid bank object');
+	}
+	for (const [key, value] of Object.entries(bank.bank)) {
+		const pair = [key, value].join('-');
+		if (value < 1) {
+			throw new Error(`Less than 1 qty: ${pair}`);
+		}
+
+		if (!Number.isInteger(value)) {
+			throw new Error(`Non-integer value: ${pair}`);
+		}
+
+		const item = getItem(key);
+		if (!item) {
+			throw new Error(`Invalid item ID: ${pair}`);
+		}
+	}
+}
+
 export function convertBankToPerHourStats(bank: Bank, time: number) {
 	let result = [];
 	for (const [item, qty] of bank.items()) {
@@ -361,18 +367,8 @@ export function convertBankToPerHourStats(bank: Bank, time: number) {
 	return result;
 }
 
-export function truncateString(str: string, maxLen: number) {
-	if (str.length < maxLen) return str;
-	return `${str.slice(0, maxLen - 3)}...`;
-}
-
 export function removeMarkdownEmojis(str: string) {
 	return escapeMarkdown(stripEmojis(str));
-}
-export { cleanString, stringMatches } from './util/cleanString';
-
-export function discrimName(user: DJSUser) {
-	return `${user.username}#${user.discriminator}`;
 }
 
 export function isValidSkill(skill: string): skill is SkillsEnum {
@@ -385,6 +381,7 @@ function normalizeMahojiResponse(one: Awaited<CommandResponse>): BaseMessageOpti
 	const response: BaseMessageOptions = {};
 	if (one.content) response.content = one.content;
 	if (one.files) response.files = one.files;
+	if (one.components) response.components = one.components;
 	return response;
 }
 
@@ -394,10 +391,11 @@ export function roughMergeMahojiResponse(
 ): InteractionReplyOptions {
 	const first = normalizeMahojiResponse(one);
 	const second = normalizeMahojiResponse(two);
-	const newResponse: InteractionReplyOptions = { content: '', files: [] };
+	const newResponse: InteractionReplyOptions = { content: '', files: [], components: [] };
 	for (const res of [first, second]) {
 		if (res.content) newResponse.content += `${res.content} `;
 		if (res.files) newResponse.files = [...newResponse.files!, ...res.files];
+		if (res.components) newResponse.components = res.components;
 	}
 	return newResponse;
 }
@@ -442,22 +440,6 @@ export function makeComponents(components: ButtonBuilder[]): InteractionReplyOpt
 	return chunk(components, 5).map(i => ({ components: i, type: ComponentType.ActionRow }));
 }
 
-export function validateItemBankAndThrow(input: any): input is ItemBank {
-	if (!isObject(input)) {
-		throw new Error('Invalid bank');
-	}
-	const numbers = [];
-	for (const [key, val] of Object.entries(input)) {
-		numbers.push(parseInt(key), val);
-	}
-	for (const num of numbers) {
-		if (isNaN(num) || typeof num !== 'number' || !Number.isInteger(num) || num < 0) {
-			throw new Error('Invalid bank');
-		}
-	}
-	return true;
-}
-
 type test = CollectorFilter<
 	[
 		ButtonInteraction<CacheType> | SelectMenuInteraction<CacheType>,
@@ -483,10 +465,6 @@ export function awaitMessageComponentInteraction({
 	});
 }
 
-export function isGuildChannel(channel?: Channel): channel is GuildTextBasedChannel {
-	return channel !== undefined && !channel.isDMBased() && Boolean(channel.guild);
-}
-
 export async function runTimedLoggedFn(name: string, fn: () => Promise<unknown>) {
 	debugLog(`Starting ${name}...`);
 	const stopwatch = new Stopwatch();
@@ -494,28 +472,6 @@ export async function runTimedLoggedFn(name: string, fn: () => Promise<unknown>)
 	await fn();
 	stopwatch.stop();
 	debugLog(`Finished ${name} in ${stopwatch.toString()}`);
-}
-
-export function isFunction(input: unknown): input is Function {
-	return typeof input === 'function';
-}
-
-export function dateFm(date: Date) {
-	return `${time(date, 'T')} (${time(date, 'R')})`;
-}
-
-const validChars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-
-export function miniID(length: number): string {
-	let id = '';
-
-	for (let i = 0; i < length; i++) {
-		const randomChar = validChars[Math.floor(Math.random() * validChars.length)];
-
-		id += randomChar;
-	}
-
-	return id;
 }
 
 export function getInteractionTypeName(type: InteractionType) {
@@ -532,6 +488,68 @@ export function isModOrAdmin(user: MUser) {
 	return [...OWNER_IDS, ...ADMIN_IDS].includes(user.id) || user.bitfield.includes(BitField.isModerator);
 }
 
+export async function calcClueScores(user: MUser) {
+	const stats = await user.fetchStats({ openable_scores: true });
+	const openableBank = new Bank(stats.openable_scores as ItemBank);
+	return openableBank
+		.items()
+		.map(entry => {
+			const tier = ClueTiers.find(i => i.id === entry[0].id);
+			if (!tier) return;
+			return {
+				tier,
+				casket: getOSItem(tier.id),
+				clueScroll: getOSItem(tier.scrollID),
+				opened: openableBank.amount(tier.id)
+			};
+		})
+		.filter(notEmpty);
+}
+
+export async function fetchStatsForCL(user: MUser): Promise<UserStatsDataNeededForCL> {
+	const stats = await MUserStats.fromID(user.id);
+	const { userStats } = stats;
+	return {
+		sacrificedBank: new Bank(userStats.sacrificed_bank as ItemBank),
+		titheFarmsCompleted: userStats.tithe_farms_completed,
+		lapsScores: userStats.laps_scores as ItemBank,
+		openableScores: new Bank(userStats.openable_scores as ItemBank),
+		kcBank: userStats.monster_scores as ItemBank,
+		highGambles: userStats.high_gambles,
+		gotrRiftSearches: userStats.gotr_rift_searches,
+		stats
+	};
+}
+
+export function md5sum(str: string) {
+	return createHash('md5').update(str).digest('hex');
+}
+
 export { assert } from './util/logError';
 export * from './util/smallUtils';
 export { channelIsSendable } from '@oldschoolgg/toolkit';
+
+export function checkRangeGearWeapon(gear: Gear) {
+	const weapon = gear.equippedWeapon();
+	if (!weapon) return 'You have no weapon equipped.';
+	const { ammo } = gear;
+	if (!ammo) return 'You have no ammo equipped.';
+
+	const projectileCategory = objectEntries(projectiles).find(i =>
+		i[1].weapons
+			.map(w => getSimilarItems(w))
+			.flat()
+			.includes(weapon.id)
+	);
+	if (!projectileCategory) return 'You have an invalid range weapon.';
+	if (!projectileCategory[1].items.includes(ammo.item)) {
+		return `You have invalid ammo for your equipped weapon. For ${
+			projectileCategory[0]
+		}-based weapons, you can use: ${projectileCategory[1].items.map(itemNameFromID).join(', ')}.`;
+	}
+
+	return {
+		weapon,
+		ammo
+	};
+}

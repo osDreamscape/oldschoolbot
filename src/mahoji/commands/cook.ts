@@ -2,11 +2,14 @@ import { Time } from 'e';
 import { ApplicationCommandOptionType, CommandRunOptions } from 'mahoji';
 import { Bank } from 'oldschooljs';
 
-import Cooking, { Cookables } from '../../lib/skilling/skills/cooking';
+import { KourendKebosDiary, userhasDiaryTier } from '../../lib/diaries';
+import Cooking, { Cookables } from '../../lib/skilling/skills/cooking/cooking';
+import LeapingFish from '../../lib/skilling/skills/cooking/leapingFish';
 import { CookingActivityTaskOptions } from '../../lib/types/minions';
 import { formatDuration, itemID, stringMatches } from '../../lib/util';
 import addSubTaskToActivityTask from '../../lib/util/addSubTaskToActivityTask';
 import { calcMaxTripLength } from '../../lib/util/calcMaxTripLength';
+import { cutLeapingFishCommand } from '../lib/abstracted_commands/cutLeapingFishCommand';
 import { OSBMahojiCommand } from '../lib/util';
 
 export const cookCommand: OSBMahojiCommand = {
@@ -24,12 +27,12 @@ export const cookCommand: OSBMahojiCommand = {
 			description: 'The thing you want to cook.',
 			required: true,
 			autocomplete: async (value: string) => {
-				return Cookables.filter(i => (!value ? true : i.name.toLowerCase().includes(value.toLowerCase()))).map(
-					i => ({
-						name: i.name,
-						value: i.name
-					})
-				);
+				return [...Cookables.map(i => i.name), ...LeapingFish.map(i => i.item.name)]
+					.filter(name => (!value ? true : name.toLowerCase().includes(value.toLowerCase())))
+					.map(i => ({
+						name: i,
+						value: i
+					}));
 			}
 		},
 		{
@@ -42,6 +45,19 @@ export const cookCommand: OSBMahojiCommand = {
 	],
 	run: async ({ options, userID, channelID }: CommandRunOptions<{ name: string; quantity?: number }>) => {
 		const user = await mUserFetch(userID);
+		let { quantity, name } = options;
+
+		const barbarianFish = LeapingFish.find(
+			_leapingFish =>
+				stringMatches(_leapingFish.item.name, name) ||
+				stringMatches(_leapingFish.item.name.split(' ')[0], name) ||
+				_leapingFish.aliases.some(alias => stringMatches(alias, name))
+		);
+
+		if (barbarianFish) {
+			return cutLeapingFishCommand({ user, channelID, name, quantity });
+		}
+
 		const cookable = Cooking.Cookables.find(
 			cookable =>
 				stringMatches(cookable.name, options.name) ||
@@ -58,10 +74,26 @@ export const cookCommand: OSBMahojiCommand = {
 			return `${user.minionName} needs ${cookable.level} Cooking to cook ${cookable.name}s.`;
 		}
 
-		// Based off catherby fish/hr rates
-		let timeToCookSingleCookable = Time.Second * 2.88;
+		// These are just for notifying the user, they only take effect in the Activity.
+		const boosts = [];
+		const [hasEasyDiary] = await userhasDiaryTier(user, KourendKebosDiary.easy);
+		const [hasEliteDiary] = await userhasDiaryTier(user, KourendKebosDiary.elite);
+		if (hasEasyDiary) boosts.push('Using Hosidius Range');
+		if (hasEasyDiary && hasEliteDiary) boosts.push('Kourend Elite Diary');
+		const hasGaunts = user.hasEquipped('Cooking gauntlets');
+		if (hasGaunts) boosts.push('Cooking gauntlets equipped');
+
+		const skills = user.skillsAsLevels;
+		let timeToCookSingleCookable = Time.Second * 2.4 + Time.Second * 0.45;
+
 		if (cookable.id === itemID('Jug of wine') || cookable.id === itemID('Wine of zamorak')) {
-			timeToCookSingleCookable /= 1.6;
+			timeToCookSingleCookable /= 1.9;
+		}
+
+		// Enable 1 tick Karambwan half way to 99
+		if (skills.cooking >= 92 && cookable.id === itemID('Cooked karambwan')) {
+			timeToCookSingleCookable /= 3.8;
+			boosts.push('1t karambwans cooking with 92+ cooking');
 		}
 
 		const userBank = user.bank;
@@ -69,7 +101,6 @@ export const cookCommand: OSBMahojiCommand = {
 
 		const maxTripLength = calcMaxTripLength(user, 'Cooking');
 
-		let { quantity } = options;
 		if (!quantity) {
 			quantity = Math.floor(maxTripLength / timeToCookSingleCookable);
 			const max = userBank.fits(inputCost);
@@ -105,6 +136,6 @@ export const cookCommand: OSBMahojiCommand = {
 
 		return `${user.minionName} is now cooking ${quantity}x ${cookable.name}, it'll take around ${formatDuration(
 			duration
-		)} to finish.`;
+		)} to finish.${boosts.length > 0 ? `\n\nBoosts: ${boosts.join(', ')}` : ''}`;
 	}
 };

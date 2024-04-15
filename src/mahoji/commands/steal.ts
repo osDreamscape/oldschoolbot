@@ -1,16 +1,16 @@
+import { stringMatches } from '@oldschoolgg/toolkit';
 import { User } from 'discord.js';
+import { randInt } from 'e';
 import { ApplicationCommandOptionType, CommandRunOptions } from 'mahoji';
 
 import { ArdougneDiary, userhasDiaryTier } from '../../lib/diaries';
-import { Favours, gotFavour } from '../../lib/minions/data/kourendFavour';
 import removeFoodFromUser from '../../lib/minions/functions/removeFoodFromUser';
 import { Stealable, stealables } from '../../lib/skilling/skills/thieving/stealables';
 import { SkillsEnum } from '../../lib/skilling/types';
 import { PickpocketActivityTaskOptions } from '../../lib/types/minions';
-import { formatDuration, rand } from '../../lib/util';
+import { formatDuration } from '../../lib/util';
 import addSubTaskToActivityTask from '../../lib/util/addSubTaskToActivityTask';
 import { calcMaxTripLength } from '../../lib/util/calcMaxTripLength';
-import { stringMatches } from '../../lib/util/cleanString';
 import { logError } from '../../lib/util/logError';
 import { updateBankSetting } from '../../lib/util/updateBankSetting';
 import { calcLootXPPickpocketing } from '../../tasks/minions/pickpocketActivity';
@@ -87,11 +87,6 @@ export const stealCommand: OSBMahojiCommand = {
 			} a ${stealable.name}.`;
 		}
 
-		const [hasFavour, requiredPoints] = gotFavour(user, Favours.Hosidius, 15);
-		if (!hasFavour && stealable.name === 'Fruit stall') {
-			return `${user.minionName} needs ${requiredPoints}% Hosidius Favour to steal fruit from the Fruit stalls!`;
-		}
-
 		const timeToTheft =
 			stealable.type === 'pickpockable' ? (stealable.customTickRate ?? 2) * 600 : stealable.respawnTime;
 
@@ -161,7 +156,7 @@ export const stealCommand: OSBMahojiCommand = {
 			str += ` Removed ${foodRemoved}.`;
 		} else {
 			// Up to 5% fail chance, random
-			successfulQuantity = Math.floor((quantity * rand(95, 100)) / 100);
+			successfulQuantity = Math.floor((quantity * randInt(95, 100)) / 100);
 			xpReceived = successfulQuantity * stealable.xp;
 		}
 

@@ -63,7 +63,9 @@ export function checkNexUser(user: MUser): [false] | [true, string] {
 	if (offence < 50) {
 		return [
 			true,
-			`${tag}'s range gear is terrible! You need higher range attack. You have ${offence}%, you need 50%.`
+			`${tag}'s range gear is terrible! You need higher range attack. You have ${offence.toFixed(
+				2
+			)}%, you need 50%.`
 		];
 	}
 	if (defence < 50) return [true, `${tag}'s range gear is terrible! You need higher mage defence.`];
@@ -121,9 +123,9 @@ interface TeamMember {
 	totalDefensivePercent: number;
 }
 
-interface NexContext {
+export interface NexContext {
 	quantity: number;
-	team: { id: string; contribution: number; deaths: number[] }[];
+	team: { id: string; contribution: number; deaths: number[]; ghost?: true }[];
 }
 
 export const purpleNexItems = resolveItems([
@@ -141,6 +143,9 @@ export function handleNexKills({ quantity, team }: NexContext) {
 
 	for (let i = 0; i < quantity; i++) {
 		const survivors = team.filter(usr => !usr.deaths.includes(i));
+		if (survivors.length === 0) {
+			continue;
+		}
 
 		const uniqueRecipient = roll(43) ? randArrItem(survivors).id : null;
 		const nonUniqueDrop = NexNonUniqueTable.roll();
@@ -150,7 +155,7 @@ export function handleNexKills({ quantity, team }: NexContext) {
 			if (teamMember.id === uniqueRecipient) {
 				teamLoot.add(teamMember.id, NexUniqueTable.roll());
 			}
-			if (roll(20)) {
+			if (roll(48)) {
 				teamLoot.add(teamMember.id, 'Clue scroll (elite)');
 			}
 		}
@@ -161,10 +166,15 @@ export function handleNexKills({ quantity, team }: NexContext) {
 		}
 	}
 
+	for (const member of team) {
+		if (member.ghost) {
+			teamLoot.map.delete(member.id);
+		}
+	}
 	return teamLoot;
 }
 
-export function calculateNexDetails({ team }: { team: MUser[] }) {
+export async function calculateNexDetails({ team }: { team: MUser[] }) {
 	let maxTripLength = Math.max(...team.map(u => calcMaxTripLength(u)));
 	let lengthPerKill = Time.Minute * 35;
 	let resultTeam: TeamMember[] = [];
@@ -172,7 +182,7 @@ export function calculateNexDetails({ team }: { team: MUser[] }) {
 	for (const member of team) {
 		let { offence, defence, rangeGear } = nexGearStats(member);
 		let deathChance = 100;
-		let nexKC = member.getKC(NEX_ID);
+		let nexKC = await member.getKC(NEX_ID);
 		const kcLearningCap = 500;
 		const kcPercent = clamp(calcWhatPercent(nexKC, kcLearningCap), 0, 100);
 		const messages: string[] = [];

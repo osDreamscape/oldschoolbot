@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+
 import { Bank } from 'oldschooljs';
 import Piscina from 'piscina';
 
@@ -16,6 +17,7 @@ export interface KillWorkerArgs {
 	limit: number;
 	onTask: boolean;
 	catacombs: boolean;
+	lootTableTertiaryChanges: [string, number][];
 }
 
 export type KillWorkerReturn = Promise<{
@@ -27,6 +29,7 @@ export type KillWorkerReturn = Promise<{
 
 export interface FinishWorkerArgs {
 	name: string;
+	tertiaries?: boolean;
 }
 
 export type FinishWorkerReturn = Promise<
@@ -34,6 +37,7 @@ export type FinishWorkerReturn = Promise<
 			loot: ItemBank;
 			kcBank: ItemBank;
 			kc: number;
+			cost: ItemBank;
 	  }
 	| string
 >;
@@ -46,6 +50,6 @@ export const casketWorker = new Piscina({ filename: resolve(__dirname, 'casket.w
 
 export const Workers = {
 	casketOpen: (args: CasketWorkerArgs): Promise<[Bank, string]> => casketWorker.run(args),
-	kill: (args: KillWorkerArgs): Promise<KillWorkerReturn> => killWorker.run(args),
-	finish: (args: FinishWorkerArgs): Promise<FinishWorkerReturn> => finishWorker.run(args)
+	kill: (args: KillWorkerArgs): KillWorkerReturn => killWorker.run(args),
+	finish: (args: FinishWorkerArgs): FinishWorkerReturn => finishWorker.run(args)
 };

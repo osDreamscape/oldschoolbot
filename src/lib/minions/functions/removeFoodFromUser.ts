@@ -1,3 +1,4 @@
+import { UserError } from '@oldschoolgg/toolkit/dist/lib/UserError';
 import { objectEntries, reduceNumByPercent } from 'e';
 import { Bank } from 'oldschooljs';
 import { itemID } from 'oldschooljs/dist/util';
@@ -5,7 +6,6 @@ import { itemID } from 'oldschooljs/dist/util';
 import { Emoji } from '../../constants';
 import { Eatables } from '../../data/eatables';
 import { GearSetupType } from '../../gear/types';
-import { UserError } from '../../UserError';
 import { updateBankSetting } from '../../util/updateBankSetting';
 import getUserFoodFromBank from './getUserFoodFromBank';
 
@@ -15,7 +15,9 @@ export default async function removeFoodFromUser({
 	healPerAction,
 	activityName,
 	attackStylesUsed,
-	learningPercentage
+	learningPercentage,
+	isWilderness,
+	unavailableBank
 }: {
 	user: MUser;
 	totalHealingNeeded: number;
@@ -23,6 +25,8 @@ export default async function removeFoodFromUser({
 	activityName: string;
 	attackStylesUsed: GearSetupType[];
 	learningPercentage?: number;
+	isWilderness?: boolean;
+	unavailableBank?: Bank;
 }): Promise<{ foodRemoved: Bank; reductions: string[]; reductionRatio: number }> {
 	const originalTotalHealing = totalHealingNeeded;
 	const rawGear = user.gear;
@@ -47,7 +51,14 @@ export default async function removeFoodFromUser({
 	}
 	const favoriteFood = user.user.favorite_food;
 
-	const foodToRemove = getUserFoodFromBank(user, totalHealingNeeded, favoriteFood);
+	const foodToRemove = getUserFoodFromBank({
+		user,
+		totalHealingNeeded,
+		favoriteFood,
+		minimumHealAmount: undefined,
+		isWilderness,
+		unavailableBank
+	});
 	if (!foodToRemove) {
 		throw new UserError(
 			`You don't have enough food to do ${activityName}! You need enough food to heal at least ${totalHealingNeeded} HP (${healPerAction} per action). You can use these food items: ${Eatables.map(

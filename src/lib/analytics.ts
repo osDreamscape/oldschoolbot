@@ -1,8 +1,7 @@
-import { ActivityGroup } from '../lib/constants';
+import { ActivityGroup, globalConfig } from '../lib/constants';
 import { prisma } from '../lib/settings/prisma';
 import { GroupMonsterActivityTaskOptions } from '../lib/types/minions';
 import { taskGroupFromActivity } from '../lib/util/taskGroupFromActivity';
-import { mahojiClientSettingsFetch } from './util/clientSettings';
 
 async function calculateMinionTaskCounts() {
 	const minionTaskCounts: Record<ActivityGroup, number> = {
@@ -40,16 +39,37 @@ export async function analyticsTick() {
 	const [numberOfMinions, totalSacrificed, numberOfIronmen, totalGP] = (
 		await Promise.all(
 			[
-				'SELECT COUNT(*) FROM users WHERE "minion.hasBought" = true;',
-				'SELECT SUM ("sacrificedValue") AS count FROM users;',
-				'SELECT COUNT(*) FROM users WHERE "minion.ironman" = true;',
-				'SELECT SUM ("GP") AS count FROM users;'
+				'SELECT COUNT(*)::int FROM users WHERE "minion.hasBought" = true;',
+				'SELECT SUM("sacrificedValue") AS count FROM users;',
+				'SELECT COUNT(*)::int FROM users WHERE "minion.ironman" = true;',
+				'SELECT SUM("GP") AS count FROM users;'
 			].map(query => prisma.$queryRawUnsafe(query))
 		)
 	).map((result: any) => parseInt(result[0].count)) as number[];
 
 	const taskCounts = await calculateMinionTaskCounts();
-	const currentClientSettings = await mahojiClientSettingsFetch();
+	const currentClientSettings = await await prisma.clientStorage.findFirst({
+		where: {
+			id: globalConfig.clientID
+		},
+		select: {
+			economyStats_dicingBank: true,
+			economyStats_duelTaxBank: true,
+			gp_daily: true,
+			gp_alch: true,
+			gp_dice: true,
+			gp_hotcold: true,
+			gp_luckypick: true,
+			gp_open: true,
+			gp_pickpocket: true,
+			gp_pvm: true,
+			gp_sell: true,
+			gp_slots: true,
+			gp_tax_balance: true,
+			economyStats_dailiesAmount: true
+		}
+	});
+	if (!currentClientSettings) throw new Error('No client settings found');
 	await prisma.analytic.create({
 		data: {
 			guildsCount: globalClient.guilds.cache.size,

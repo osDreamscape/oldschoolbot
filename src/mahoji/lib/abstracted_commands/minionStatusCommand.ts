@@ -1,19 +1,76 @@
+import { toTitleCase } from '@oldschoolgg/toolkit';
 import { BaseMessageOptions, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import { roll, stripNonAlphanumeric } from 'e';
 
 import { ClueTiers } from '../../../lib/clues/clueTiers';
 import { BitField, Emoji, minionBuyButton } from '../../../lib/constants';
+import { clArrayUpdate } from '../../../lib/handleNewCLItems';
 import { roboChimpSyncData, roboChimpUserFetch } from '../../../lib/roboChimp';
+import { prisma } from '../../../lib/settings/prisma';
 import { makeComponents } from '../../../lib/util';
-import { makeAutoContractButton, makeBirdHouseTripButton } from '../../../lib/util/globalInteractions';
+import {
+	makeAutoContractButton,
+	makeAutoSlayButton,
+	makeBirdHouseTripButton
+} from '../../../lib/util/globalInteractions';
 import { minionStatus } from '../../../lib/util/minionStatus';
 import { makeRepeatTripButtons } from '../../../lib/util/repeatStoredTrip';
 import { calculateBirdhouseDetails } from './birdhousesCommand';
 import { isUsersDailyReady } from './dailyCommand';
 import { canRunAutoContract } from './farmingContractCommand';
 
+async function fetchFavoriteGearPresets(userID: string) {
+	const pinnedPresets = await prisma.gearPreset.findMany({
+		where: { user_id: userID, pinned_setup: { not: null } },
+		orderBy: { times_equipped: 'desc' },
+		take: 5
+	});
+
+	if (pinnedPresets.length === 0) return [];
+
+	return pinnedPresets.map(i =>
+		new ButtonBuilder()
+			.setStyle(ButtonStyle.Secondary)
+			.setCustomId(`GPE_${i.pinned_setup}_${stripNonAlphanumeric(i.name)}`)
+			.setLabel(`Equip '${toTitleCase(i.name).replace(/_/g, ' ')}' to ${i.pinned_setup}`)
+			.setEmoji(i.emoji_id ?? Emoji.Gear)
+	);
+}
+
+async function fetchPinnedTrips(userID: string) {
+	const pinnedPresets = await prisma.pinnedTrip.findMany({
+		where: { user_id: userID },
+		take: 5
+	});
+
+	if (pinnedPresets.length === 0) return [];
+
+	return pinnedPresets.map(i =>
+		new ButtonBuilder()
+			.setStyle(ButtonStyle.Secondary)
+			.setCustomId(`PTR_${i.id}`)
+			.setLabel(`Repeat ${i.custom_name ?? i.activity_type}`)
+			.setEmoji(i.emoji_id ?? '🔁')
+	);
+}
+
 export async function minionStatusCommand(user: MUser): Promise<BaseMessageOptions> {
-	const roboChimpUser = await roboChimpUserFetch(user.id);
-	roboChimpSyncData(roboChimpUser, user);
+	const { minionIsBusy } = user;
+	const [roboChimpUser, birdhouseDetails, gearPresetButtons, pinnedTripButtons, dailyIsReady] = await Promise.all([
+		roboChimpUserFetch(user.id),
+		minionIsBusy ? { isReady: false } : calculateBirdhouseDetails(user.id),
+		minionIsBusy ? [] : fetchFavoriteGearPresets(user.id),
+		minionIsBusy ? [] : fetchPinnedTrips(user.id),
+		isUsersDailyReady(user)
+	]);
+
+	roboChimpSyncData(user);
+	await clArrayUpdate(user, user.cl);
+	if (user.user.cached_networth_value === null || roll(100)) {
+		await user.update({
+			cached_networth_value: (await user.calculateNetWorth()).value
+		});
+	}
 
 	if (!user.user.minion_hasBought) {
 		return {
@@ -31,10 +88,6 @@ export async function minionStatusCommand(user: MUser): Promise<BaseMessageOptio
 	const status = minionStatus(user);
 	const buttons: ButtonBuilder[] = [];
 
-	const birdhouseDetails = await calculateBirdhouseDetails(user.id);
-
-	const dailyIsReady = isUsersDailyReady(user);
-
 	if (dailyIsReady.isReady) {
 		buttons.push(
 			new ButtonBuilder()
@@ -45,7 +98,7 @@ export async function minionStatusCommand(user: MUser): Promise<BaseMessageOptio
 		);
 	}
 
-	if (user.minionIsBusy) {
+	if (minionIsBusy) {
 		buttons.push(
 			new ButtonBuilder()
 				.setCustomId('CANCEL_TRIP')
@@ -55,14 +108,8 @@ export async function minionStatusCommand(user: MUser): Promise<BaseMessageOptio
 		);
 	}
 
-	if (!user.minionIsBusy) {
-		buttons.push(
-			new ButtonBuilder()
-				.setCustomId('AUTO_SLAY')
-				.setLabel('Auto Slay')
-				.setEmoji('630911040560824330')
-				.setStyle(ButtonStyle.Secondary)
-		);
+	if (!minionIsBusy && !user.bitfield.includes(BitField.DisableAutoSlayButton)) {
+		buttons.push(makeAutoSlayButton());
 	}
 
 	buttons.push(
@@ -73,22 +120,26 @@ export async function minionStatusCommand(user: MUser): Promise<BaseMessageOptio
 			.setStyle(ButtonStyle.Secondary)
 	);
 
-	if (!user.minionIsBusy && birdhouseDetails.isReady && !user.bitfield.includes(BitField.DisableBirdhouseRunButton)) {
+	if (!minionIsBusy && birdhouseDetails.isReady && !user.bitfield.includes(BitField.DisableBirdhouseRunButton)) {
 		buttons.push(makeBirdHouseTripButton());
 	}
 
-	if (!user.minionIsBusy && (await canRunAutoContract(user))) {
+	if (
+		!minionIsBusy &&
+		(await canRunAutoContract(user)) &&
+		!user.bitfield.includes(BitField.DisableAutoFarmContractButton)
+	) {
 		buttons.push(makeAutoContractButton());
 	}
 
-	if (!user.minionIsBusy) {
+	if (!minionIsBusy) {
 		const repeatButtons = await makeRepeatTripButtons(user);
 		buttons.push(...repeatButtons);
 	}
 
 	const { bank } = user;
 
-	if (!user.minionIsBusy) {
+	if (!minionIsBusy && !user.bitfield.includes(BitField.DisableClueButtons)) {
 		for (const tier of ClueTiers.filter(t => bank.has(t.scrollID))
 			.reverse()
 			.slice(0, 3)) {
@@ -102,14 +153,6 @@ export async function minionStatusCommand(user: MUser): Promise<BaseMessageOptio
 		}
 	}
 
-	buttons.push(
-		new ButtonBuilder()
-			.setCustomId('VIEW_BANK')
-			.setLabel('View Bank')
-			.setEmoji('739459924693614653')
-			.setStyle(ButtonStyle.Secondary)
-	);
-
 	if (roboChimpUser.leagues_points_total === 0) {
 		buttons.push(
 			new ButtonBuilder()
@@ -118,6 +161,13 @@ export async function minionStatusCommand(user: MUser): Promise<BaseMessageOptio
 				.setStyle(ButtonStyle.Link)
 				.setURL('https://bso-wiki.oldschool.gg/leagues')
 		);
+	}
+
+	if (gearPresetButtons.length > 0) {
+		buttons.push(...gearPresetButtons);
+	}
+	if (pinnedTripButtons.length > 0) {
+		buttons.push(...pinnedTripButtons);
 	}
 
 	return {

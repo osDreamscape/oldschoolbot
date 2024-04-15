@@ -1,5 +1,13 @@
-import { ButtonBuilder, ButtonStyle } from 'discord.js';
-import { objectEntries, Time } from 'e';
+import { exec } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+
+import { miniID, toTitleCase } from '@oldschoolgg/toolkit';
+import type { Prisma } from '@prisma/client';
+import { AlignmentEnum, AsciiTable3 } from 'ascii-table3';
+import deepmerge from 'deepmerge';
+import { ButtonBuilder, ButtonStyle, InteractionReplyOptions, time } from 'discord.js';
+import { clamp, objectEntries, roll, Time } from 'e';
+import { CommandResponse } from 'mahoji/dist/lib/structures/ICommand';
 import { Bank, Items } from 'oldschooljs';
 import { ItemBank } from 'oldschooljs/dist/meta/types';
 import { MersenneTwister19937, shuffle } from 'random-js';
@@ -7,7 +15,6 @@ import { MersenneTwister19937, shuffle } from 'random-js';
 import { skillEmoji } from '../data/emojis';
 import type { ArrayItemsResolved, Skills } from '../types';
 import getOSItem from './getOSItem';
-import { toTitleCase } from './toTitleCase';
 
 export function itemNameFromID(itemID: number | string) {
 	return Items.get(itemID)?.name;
@@ -49,10 +56,6 @@ export function calcPerHour(value: number, duration: number) {
 	return (value / (duration / Time.Minute)) * 60;
 }
 
-export function removeFromArr<T>(arr: T[] | readonly T[], item: T) {
-	return arr.filter(i => i !== item);
-}
-
 export function formatDuration(ms: number, short = false) {
 	if (ms < 0) ms = -ms;
 	const time = {
@@ -88,6 +91,10 @@ export function hasSkillReqs(user: MUser, reqs: Skills): [boolean, string | null
 		return [false, formatSkillRequirements(reqs)];
 	}
 	return [true, null];
+}
+
+export function pluraliseItemName(name: string): string {
+	return name + (name.endsWith('s') ? '' : 's');
 }
 
 /**
@@ -159,4 +166,187 @@ export function makeAutoFarmButton() {
 		.setLabel('Auto Farm')
 		.setStyle(ButtonStyle.Secondary)
 		.setEmoji('630911040355565599');
+}
+
+export const SQL_sumOfAllCLItems = (clItems: number[]) =>
+	`NULLIF(${clItems.map(i => `COALESCE(("collectionLogBank"->>'${i}')::int, 0)`).join(' + ')}, 0)`;
+
+export const generateGrandExchangeID = () => miniID(6).toLowerCase();
+
+export function tailFile(fileName: string, numLines: number): Promise<string> {
+	return new Promise((resolve, reject) => {
+		exec(`tail -n ${numLines} ${fileName}`, (error, stdout) => {
+			if (error) {
+				reject(error);
+			} else {
+				resolve(stdout);
+			}
+		});
+	});
+}
+
+export function getToaKCs(toaRaidLevelsBank: Prisma.JsonValue) {
+	let entryKC = 0;
+	let normalKC = 0;
+	let expertKC = 0;
+	for (const [levelStr, qty] of Object.entries(toaRaidLevelsBank as ItemBank)) {
+		const level = Number(levelStr);
+		if (level >= 300) {
+			expertKC += qty;
+			continue;
+		}
+		if (level >= 150) {
+			normalKC += qty;
+			continue;
+		}
+		entryKC += qty;
+	}
+	return { entryKC, normalKC, expertKC, totalKC: entryKC + normalKC + expertKC };
+}
+export const alphabeticalSort = (a: string, b: string) => a.localeCompare(b);
+
+export function dateFm(date: Date) {
+	return `${time(date, 'T')} (${time(date, 'R')})`;
+}
+
+export function getInterval(intervalHours: number) {
+	const currentTime = new Date();
+	const currentHour = currentTime.getHours();
+
+	// Find the nearest interval start hour (0, intervalHours, 2*intervalHours, etc.)
+	const startHour = currentHour - (currentHour % intervalHours);
+	const startInterval = new Date(currentTime);
+	startInterval.setHours(startHour, 0, 0, 0);
+
+	const endInterval = new Date(startInterval);
+	endInterval.setHours(startHour + intervalHours);
+
+	return {
+		start: startInterval,
+		end: endInterval,
+		nextResetStr: dateFm(endInterval)
+	};
+}
+
+export function calculateSimpleMonsterDeathChance({
+	hardness,
+	currentKC,
+	lowestDeathChance = 1,
+	highestDeathChance = 90,
+	steepness = 0.5
+}: {
+	hardness: number;
+	currentKC: number;
+	lowestDeathChance?: number;
+	highestDeathChance?: number;
+	steepness?: number;
+}): number {
+	if (!currentKC) currentKC = 1;
+	currentKC = Math.max(1, currentKC);
+	let baseDeathChance = Math.min(highestDeathChance, (100 * hardness) / steepness);
+	const maxScalingKC = 5 + (75 * hardness) / steepness;
+	let reductionFactor = Math.min(1, currentKC / maxScalingKC);
+	let deathChance = baseDeathChance - reductionFactor * (baseDeathChance - lowestDeathChance);
+	return clamp(deathChance, lowestDeathChance, highestDeathChance);
+}
+
+export function perHourChance(
+	durationMilliseconds: number,
+	oneInXPerHourChance: number,
+	successFunction: () => unknown
+) {
+	const minutesPassed = Math.floor(durationMilliseconds / 60_000);
+	const perMinuteChance = oneInXPerHourChance * 60;
+
+	for (let i = 0; i < minutesPassed; i++) {
+		if (roll(perMinuteChance)) {
+			successFunction();
+		}
+	}
+}
+
+export function perTimeUnitChance(
+	durationMilliseconds: number,
+	oneInXPerTimeUnitChance: number,
+	timeUnitInMilliseconds: number,
+	successFunction: () => unknown
+) {
+	const unitsPassed = Math.floor(durationMilliseconds / timeUnitInMilliseconds);
+	const perUnitChance = oneInXPerTimeUnitChance / (timeUnitInMilliseconds / 60_000);
+
+	for (let i = 0; i < unitsPassed; i++) {
+		if (roll(perUnitChance)) {
+			successFunction();
+		}
+	}
+}
+
+export function addBanks(banks: ItemBank[]): Bank {
+	const bank = new Bank();
+	for (const _bank of banks) {
+		bank.add(_bank);
+	}
+	return bank;
+}
+
+export function isValidDiscordSnowflake(snowflake: string): boolean {
+	return /^\d{17,19}$/.test(snowflake);
+}
+
+const TOO_LONG_STR = 'The result was too long (over 2000 characters), please read the attached file.';
+
+export function returnStringOrFile(string: string | InteractionReplyOptions): Awaited<CommandResponse> {
+	if (typeof string === 'string') {
+		if (string.length > 2000) {
+			return {
+				content: TOO_LONG_STR,
+				files: [{ attachment: Buffer.from(string), name: 'result.txt' }]
+			};
+		}
+		return string;
+	}
+	if (string.content && string.content.length > 2000) {
+		return deepmerge(
+			string,
+			{
+				content: TOO_LONG_STR,
+				files: [{ attachment: Buffer.from(string.content), name: 'result.txt' }]
+			},
+			{ clone: false }
+		);
+	}
+	return string;
+}
+
+const wordBlacklistBase64 = readFileSync('./src/lib/data/wordBlacklist.txt', 'utf-8');
+const wordBlacklist = Buffer.from(wordBlacklistBase64.trim(), 'base64')
+	.toString('utf8')
+	.split('\n')
+	.map(word => word.trim().toLowerCase());
+
+export function containsBlacklistedWord(str: string): boolean {
+	const lowerCaseStr = str.toLowerCase();
+	for (const word of wordBlacklist) {
+		if (lowerCaseStr.includes(word)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+export function ellipsize(str: string, maxLen: number = 2000) {
+	if (str.length > maxLen) {
+		return `${str.substring(0, maxLen - 3)}...`;
+	}
+	return str;
+}
+
+export function makeTable(headers: string[], rows: unknown[][]) {
+	return new AsciiTable3()
+		.setHeading(...headers)
+		.setAlign(1, AlignmentEnum.RIGHT)
+		.setAlign(2, AlignmentEnum.CENTER)
+		.setAlign(3, AlignmentEnum.LEFT)
+		.addRowMatrix(rows)
+		.toString();
 }

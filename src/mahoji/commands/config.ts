@@ -1,28 +1,42 @@
-import { Embed, inlineCode } from '@discordjs/builders';
-import { Guild, HexColorString, resolveColor, User } from 'discord.js';
-import { uniqueArr } from 'e';
+import { EmbedBuilder, inlineCode } from '@discordjs/builders';
+import { hasBanMemberPerms, miniID } from '@oldschoolgg/toolkit';
+import { activity_type_enum } from '@prisma/client';
+import { bold, ChatInputCommandInteraction, Guild, HexColorString, resolveColor, User } from 'discord.js';
+import { clamp, removeFromArr, Time, uniqueArr } from 'e';
 import { ApplicationCommandOptionType, CommandRunOptions } from 'mahoji';
 import { CommandResponse } from 'mahoji/dist/lib/structures/ICommand';
 import { Bank } from 'oldschooljs';
 import { ItemBank } from 'oldschooljs/dist/meta/types';
 
-import { BitField, PerkTier } from '../../lib/constants';
+import { production } from '../../config';
+import { BitField, ItemIconPacks, ParsedCustomEmojiWithGroups, PerkTier } from '../../lib/constants';
 import { Eatables } from '../../lib/data/eatables';
 import { CombatOptionsArray, CombatOptionsEnum } from '../../lib/minions/data/combatConstants';
 import { prisma } from '../../lib/settings/prisma';
+import { birdhouseSeeds } from '../../lib/skilling/skills/hunter/birdHouseTrapping';
 import { autoslayChoices, slayerMasterChoices } from '../../lib/slayer/constants';
 import { setDefaultAutoslay, setDefaultSlayerMaster } from '../../lib/slayer/slayerUtil';
 import { BankSortMethods } from '../../lib/sorts';
-import { itemNameFromID, removeFromArr, stringMatches } from '../../lib/util';
+import { formatDuration, isValidNickname, itemNameFromID, stringMatches } from '../../lib/util';
+import { emojiServers } from '../../lib/util/cachedUserIDs';
 import { getItem } from '../../lib/util/getOSItem';
+import { interactionReplyGetDuration } from '../../lib/util/interactionHelpers';
 import { makeBankImage } from '../../lib/util/makeBankImage';
 import { parseBank } from '../../lib/util/parseStringBank';
 import { mahojiGuildSettingsFetch, mahojiGuildSettingsUpdate } from '../guildSettings';
 import { itemOption } from '../lib/mahojiCommandOptions';
-import { allAbstractCommands, hasBanMemberPerms, OSBMahojiCommand } from '../lib/util';
+import { allAbstractCommands, OSBMahojiCommand } from '../lib/util';
 import { mahojiUsersSettingsFetch, patronMsg } from '../mahojiSettings';
 
-const toggles = [
+interface UserConfigToggle {
+	name: string;
+	bit: BitField;
+	canToggle?: (
+		user: MUser,
+		interaction?: ChatInputCommandInteraction
+	) => Promise<{ result: false; message: string } | { result: true; message?: string }>;
+}
+const toggles: UserConfigToggle[] = [
 	{
 		name: 'Disable Random Events',
 		bit: BitField.DisabledRandomEvents
@@ -36,20 +50,112 @@ const toggles = [
 		bit: BitField.DisableBirdhouseRunButton
 	},
 	{
+		name: 'Disable Auto Slay Button',
+		bit: BitField.DisableAutoSlayButton
+	},
+	{
 		name: 'Disable Ash Sanctifier',
 		bit: BitField.DisableAshSanctifier
+	},
+	{
+		name: 'Disable Auto Farm Contract Button',
+		bit: BitField.DisableAutoFarmContractButton
+	},
+	{
+		name: "Disable Grand Exchange DM's",
+		bit: BitField.DisableGrandExchangeDMs
+	},
+	{
+		name: 'Clean herbs during farm runs',
+		bit: BitField.CleanHerbsFarming
+	},
+	{
+		name: 'Lock Self From Gambling',
+		bit: BitField.SelfGamblingLocked,
+		canToggle: async (user, interaction) => {
+			if (user.bitfield.includes(BitField.SelfGamblingLocked)) {
+				if (user.user.gambling_lockout_expiry && user.user.gambling_lockout_expiry.getTime() > Date.now()) {
+					const timeRemaining = user.user.gambling_lockout_expiry.getTime() - Date.now();
+					return {
+						result: false,
+						message: `You cannot toggle this off for another ${formatDuration(
+							timeRemaining
+						)}, you locked yourself from gambling!`
+					};
+				}
+				return { result: true, message: 'Your Gambling lockout time has expired.' };
+			} else if (interaction) {
+				const durations = [
+					{ display: '24 hours', duration: Time.Day },
+					{ display: '7 days', duration: Time.Day * 7 },
+					{ display: '2 weeks', duration: Time.Day * 14 },
+					{ display: '1 month', duration: Time.Month },
+					{ display: '3 months', duration: Time.Month * 3 },
+					{ display: '6 months', duration: Time.Month * 6 },
+					{ display: '1 year', duration: Time.Year },
+					{ display: '3 years', duration: Time.Year * 3 },
+					{ display: '5 years', duration: Time.Year * 5 }
+				];
+				if (!production) {
+					durations.push({ display: '30 seconds', duration: Time.Second * 30 });
+					durations.push({ display: '1 minute', duration: Time.Minute });
+					durations.push({ display: '5 minutes', duration: Time.Minute * 5 });
+				}
+				const lockoutDuration = await interactionReplyGetDuration(
+					interaction,
+					`${user}, This will lockout your ability to gamble for the specified time. Choose carefully!`,
+					...durations
+				);
+
+				if (lockoutDuration !== false) {
+					await user.update({ gambling_lockout_expiry: new Date(Date.now() + lockoutDuration.duration) });
+					return {
+						result: true,
+						message: `Locking out gambling for ${formatDuration(lockoutDuration.duration)}`
+					};
+				}
+				return { result: false, message: 'Cancelled.' };
+			}
+			// If handleToggle called without an interaction, perhaps by non-interactive code, allow toggle.
+			return { result: true };
+		}
+	},
+	{
+		name: 'Disable farming reminders',
+		bit: BitField.DisabledFarmingReminders
+	},
+	{
+		name: 'Disable Clue Buttons',
+		bit: BitField.DisableClueButtons
+	},
+	{
+		name: 'Disable wilderness high peak time warning',
+		bit: BitField.DisableHighPeakTimeWarning
+	},
+	{
+		name: 'Disable Names on Opens',
+		bit: BitField.DisableOpenableNames
 	}
 ];
 
-async function handleToggle(user: MUser, name: string) {
+async function handleToggle(user: MUser, name: string, interaction?: ChatInputCommandInteraction) {
 	const toggle = toggles.find(i => stringMatches(i.name, name));
 	if (!toggle) return 'Invalid toggle name.';
+	let messageExtra = '';
+	if (toggle.canToggle) {
+		const toggleResult = await toggle.canToggle(user, interaction);
+		if (!toggleResult.result) {
+			return toggleResult.message;
+		} else if (toggleResult.message) {
+			messageExtra = toggleResult.message;
+		}
+	}
 	const includedNow = user.bitfield.includes(toggle.bit);
 	const nextArr = includedNow ? removeFromArr(user.bitfield, toggle.bit) : [...user.bitfield, toggle.bit];
 	await user.update({
 		bitfield: nextArr
 	});
-	return `Toggled '${toggle.name}' ${includedNow ? 'Off' : 'On'}.`;
+	return `Toggled '${toggle.name}' ${includedNow ? 'Off' : 'On'}.${messageExtra ? `\n\n${messageExtra}` : ''}`;
 }
 
 async function favFoodConfig(
@@ -173,11 +279,46 @@ async function favAlchConfig(
 	return `Added ${item.name} to your favorite alchable items.`;
 }
 
+async function favBhSeedsConfig(
+	user: MUser,
+	itemToAdd: string | undefined,
+	itemToRemove: string | undefined,
+	reset: boolean
+) {
+	if (reset) {
+		await user.update({ favorite_bh_seeds: [] });
+		return 'Cleared all favorite birdhouse seeds.';
+	}
+
+	const currentFavorites = user.user.favorite_bh_seeds;
+	if (itemToAdd || itemToRemove) {
+		const item = getItem(itemToAdd ?? itemToRemove);
+		if (!item) return "That item doesn't exist.";
+		if (!birdhouseSeeds.some(seed => seed.item.id === item.id)) return "That item can't be used in birdhouses.";
+		if (itemToAdd) {
+			if (currentFavorites.includes(item.id)) return 'This item is already favorited.';
+			await user.update({ favorite_bh_seeds: [...currentFavorites, item.id] });
+			return `You favorited ${item.name}.`;
+		}
+		if (itemToRemove) {
+			if (!currentFavorites.includes(item.id)) return 'This item is not favorited.';
+			await user.update({ favorite_bh_seeds: removeFromArr(currentFavorites, item.id) });
+			return `You unfavorited ${item.name}.`;
+		}
+	}
+
+	const currentItems = `Your current favorite items are: ${
+		currentFavorites.length === 0 ? 'None' : currentFavorites.map(itemNameFromID).join(', ')
+	}.`;
+	return currentItems;
+}
+
 async function bankSortConfig(
 	user: MUser,
 	sortMethod: string | undefined,
 	addWeightingBank: string | undefined,
-	removeWeightingBank: string | undefined
+	removeWeightingBank: string | undefined,
+	resetWeightingBank: string | undefined
 ): CommandResponse {
 	const currentMethod = user.user.bank_sort_method;
 	const currentWeightingBank = new Bank(user.user.bank_sort_weightings as ItemBank);
@@ -187,7 +328,7 @@ async function bankSortConfig(
 		return patronMsg(PerkTier.Two);
 	}
 
-	if (!sortMethod && !addWeightingBank && !removeWeightingBank) {
+	if (!sortMethod && !addWeightingBank && !removeWeightingBank && !resetWeightingBank) {
 		const sortStr = currentMethod
 			? `Your current bank sort method is ${inlineCode(currentMethod)}.`
 			: 'You have not set a bank sort method.';
@@ -231,18 +372,19 @@ async function bankSortConfig(
 
 	if (addWeightingBank) newBank.add(inputBank);
 	else if (removeWeightingBank) newBank.remove(inputBank);
+	else if (resetWeightingBank && resetWeightingBank === 'reset') newBank.bank = {};
 
 	await user.update({
 		bank_sort_weightings: newBank.bank
 	});
 
-	return bankSortConfig(await mUserFetch(user.id), undefined, undefined, undefined);
+	return bankSortConfig(await mUserFetch(user.id), undefined, undefined, undefined, undefined);
 }
 
 async function bgColorConfig(user: MUser, hex?: string) {
 	const currentColor = user.user.bank_bg_hex;
 
-	const embed = new Embed();
+	const embed = new EmbedBuilder();
 
 	if (hex === 'reset') {
 		await user.update({
@@ -414,7 +556,7 @@ async function handleCommandEnable(
 const priorityWarningMsg =
 	"\n\n**Important: By default, 'Always barrage/burst' will take priority if 'Always cannon' is also enabled.**";
 async function handleCombatOptions(user: MUser, command: 'add' | 'remove' | 'list' | 'help', option?: string) {
-	const settings = await mahojiUsersSettingsFetch(user.id);
+	const settings = await mahojiUsersSettingsFetch(user.id, { combat_options: true });
 	if (!command || (command && command === 'list')) {
 		// List enabled combat options:
 		const cbOpts = settings.combat_options.map(o => CombatOptionsArray.find(coa => coa!.id === o)!.name);
@@ -488,8 +630,7 @@ async function handleCombatOptions(user: MUser, command: 'add' | 'remove' | 'lis
 }
 
 async function handleRSN(user: MUser, newRSN: string) {
-	const settings = await mahojiUsersSettingsFetch(user.id);
-	const { RSN } = settings;
+	const { RSN } = user.user;
 	if (!newRSN && RSN) {
 		return `Your current RSN is: \`${RSN}\``;
 	}
@@ -514,6 +655,72 @@ async function handleRSN(user: MUser, newRSN: string) {
 		return `Changed your RSN from \`${RSN}\` to \`${newRSN}\``;
 	}
 	return `Your RSN has been set to: \`${newRSN}\`.`;
+}
+
+function pinnedTripLimit(perkTier: number) {
+	return clamp(perkTier + 1, 1, 4);
+}
+export async function pinTripCommand(
+	user: MUser,
+	tripId: string | undefined,
+	emoji: string | undefined,
+	customName: string | undefined
+) {
+	if (!tripId) return 'Invalid trip.';
+	const id = Number(tripId);
+	const trip = await prisma.activity.findFirst({ where: { id, user_id: BigInt(user.id) } });
+	if (!trip) return 'Invalid trip.';
+
+	if (emoji) {
+		const res = ParsedCustomEmojiWithGroups.exec(emoji);
+		if (!res || !res[3]) return "That's not a valid emoji.";
+		// eslint-disable-next-line prefer-destructuring
+		emoji = res[3];
+
+		const cachedEmoji = globalClient.emojis.cache.get(emoji);
+		if ((!cachedEmoji || !emojiServers.has(cachedEmoji.guild.id)) && production) {
+			return "Sorry, that emoji can't be used. Only emojis in the main support server, or our emoji servers can be used.";
+		}
+	}
+
+	if (customName) {
+		if (!isValidNickname(customName) || customName.length >= 32) return 'Invalid custom name.';
+	}
+
+	const limit = pinnedTripLimit(user.perkTier());
+	const currentPinnedTripsCount = await prisma.pinnedTrip.count({ where: { user_id: user.id } });
+	if (currentPinnedTripsCount >= limit) {
+		return `You cannot have more than ${limit}x pinned trips, unpin one first. Your limit is ${limit}, you can get up to 4 by being a patron.`;
+	}
+
+	await prisma.pinnedTrip.create({
+		data: {
+			id: miniID(7),
+			emoji_id: emoji,
+			custom_name: customName,
+			activity: {
+				connect: {
+					id: trip.id
+				}
+			},
+			user: {
+				connect: {
+					id: user.id
+				}
+			},
+			activity_type: trip.type,
+			data: trip.data as object
+		}
+	});
+
+	return `You pinned a ${trip.type} trip. You can now see it in your buttons.`;
+}
+
+async function unpinTripCommand(user: MUser, tripId: string | undefined) {
+	const trip = await prisma.pinnedTrip.findFirst({ where: { id: tripId, user_id: user.id } });
+	if (!trip) return 'Invalid trip.';
+	await prisma.pinnedTrip.delete({ where: { id: trip.id } });
+	return `You unpinned a ${trip.activity_type} trip.`;
 }
 
 export const configCommand: OSBMahojiCommand = {
@@ -723,6 +930,12 @@ export const configCommand: OSBMahojiCommand = {
 							name: 'remove_weightings',
 							description: "Remove weightings for extra bank sorting (e.g. '1 trout, 5 coal')",
 							required: false
+						},
+						{
+							type: ApplicationCommandOptionType.String,
+							name: 'reset_weightings',
+							description: "Type 'reset' to confirm you want to delete ALL of your bank weightings.",
+							required: false
 						}
 					]
 				},
@@ -753,6 +966,51 @@ export const configCommand: OSBMahojiCommand = {
 							type: ApplicationCommandOptionType.Boolean,
 							name: 'reset',
 							description: 'Reset all of your favorite alchs',
+							required: false
+						}
+					]
+				},
+				{
+					type: ApplicationCommandOptionType.Subcommand,
+					name: 'favorite_bh_seeds',
+					description: 'Manage your favorite birdhouse seeds.',
+					options: [
+						{
+							type: ApplicationCommandOptionType.String,
+							name: 'add',
+							description: 'Add an item to your favorite birdhouse seeds.',
+							required: false,
+							autocomplete: async (value: string) => {
+								return birdhouseSeeds
+									.filter(i => (!value ? true : stringMatches(i.item.name, value)))
+									.map(i => ({
+										name: `${i.item.name}`,
+										value: i.item.id.toString()
+									}));
+							}
+						},
+						{
+							type: ApplicationCommandOptionType.String,
+							name: 'remove',
+							description: 'Remove an item from your favorite birdhouse seeds.',
+							required: false,
+							autocomplete: async (value: string, user: User) => {
+								const mUser = await mahojiUsersSettingsFetch(user.id, { favorite_bh_seeds: true });
+								return birdhouseSeeds
+									.filter(i => {
+										if (!mUser.favorite_bh_seeds.includes(i.item.id)) return false;
+										return !value ? true : stringMatches(i.item.name, value);
+									})
+									.map(i => ({
+										name: `${i.item.name}`,
+										value: i.item.id.toString()
+									}));
+							}
+						},
+						{
+							type: ApplicationCommandOptionType.Boolean,
+							name: 'reset',
+							description: 'Reset all of your favorite birdhouse seeds.',
 							required: false
 						}
 					]
@@ -845,6 +1103,76 @@ export const configCommand: OSBMahojiCommand = {
 							choices: autoslayChoices
 						}
 					]
+				},
+				{
+					type: ApplicationCommandOptionType.Subcommand,
+					name: 'pin_trip',
+					description: 'Pin a trip so you can easily repeat it whenever you want.',
+					options: [
+						{
+							type: ApplicationCommandOptionType.String,
+							name: 'trip',
+							description: 'The trip you want to pin.',
+							required: false,
+							autocomplete: async (_, user) => {
+								let res = await prisma.$queryRawUnsafe<
+									{ type: activity_type_enum; data: object; id: number; finish_date: string }[]
+								>(`
+SELECT DISTINCT ON (activity.type) activity.type, activity.data, activity.id, activity.finish_date
+FROM activity
+WHERE finish_date::date > now() - INTERVAL '31 days'
+AND user_id = '${user.id}'::bigint
+ORDER BY activity.type, finish_date DESC
+LIMIT 20;
+;`);
+								return res.map(i => ({
+									name: `${i.type} (Finished ${formatDuration(
+										Date.now() - new Date(i.finish_date).getTime()
+									)} ago)`,
+									value: i.id.toString()
+								}));
+							}
+						},
+						{
+							type: ApplicationCommandOptionType.String,
+							required: false,
+							name: 'emoji',
+							description: 'Pick an emoji for the button (optional).'
+						},
+						{
+							type: ApplicationCommandOptionType.String,
+							required: false,
+							name: 'custom_name',
+							description: 'Custom name for the button (optional).'
+						},
+						{
+							type: ApplicationCommandOptionType.String,
+							name: 'unpin_trip',
+							description: 'The trip you want to unpin.',
+							required: false,
+							autocomplete: async (_, user) => {
+								const res = await prisma.pinnedTrip.findMany({ where: { user_id: user.id } });
+								return res.map(i => ({
+									name: `${i.activity_type}${i.custom_name ? `- ${i.custom_name}` : ''}`,
+									value: i.id.toString()
+								}));
+							}
+						}
+					]
+				},
+				{
+					type: ApplicationCommandOptionType.Subcommand,
+					name: 'icon_pack',
+					description: 'Change your icon pack',
+					options: [
+						{
+							type: ApplicationCommandOptionType.String,
+							name: 'name',
+							description: 'The icon pack you want to use.',
+							required: true,
+							choices: ['Default', ...ItemIconPacks.map(i => i.name)].map(i => ({ name: i, value: i }))
+						}
+					]
 				}
 			]
 		}
@@ -853,7 +1181,8 @@ export const configCommand: OSBMahojiCommand = {
 		options,
 		userID,
 		guildID,
-		channelID
+		channelID,
+		interaction
 	}: CommandRunOptions<{
 		server?: {
 			channel?: { choice: 'enable' | 'disable' };
@@ -866,11 +1195,19 @@ export const configCommand: OSBMahojiCommand = {
 			combat_options?: { action: 'add' | 'remove' | 'list' | 'help'; input: string };
 			set_rsn?: { username: string };
 			bg_color?: { color?: string };
-			bank_sort?: { sort_method?: string; add_weightings?: string; remove_weightings?: string };
+			bank_sort?: {
+				sort_method?: string;
+				add_weightings?: string;
+				remove_weightings?: string;
+				reset_weightings?: string;
+			};
 			favorite_alchs?: { add?: string; remove?: string; add_many?: string; reset?: boolean };
 			favorite_food?: { add?: string; remove?: string; reset?: boolean };
 			favorite_items?: { add?: string; remove?: string; reset?: boolean };
+			favorite_bh_seeds?: { add?: string; remove?: string; reset?: boolean };
 			slayer?: { master?: string; autoslay?: string };
+			pin_trip?: { trip?: string; unpin_trip?: string; emoji?: string; custom_name?: string };
+			icon_pack?: { name?: string };
 		};
 	}>) => {
 		const user = await mUserFetch(userID);
@@ -899,10 +1236,38 @@ export const configCommand: OSBMahojiCommand = {
 				favorite_alchs,
 				favorite_food,
 				favorite_items,
-				slayer
+				favorite_bh_seeds,
+				slayer,
+				pin_trip,
+				icon_pack
 			} = options.user;
+			if (icon_pack) {
+				if (icon_pack.name) {
+					if (icon_pack.name === 'Default') {
+						if (user.user.icon_pack_id) {
+							await user.update({
+								icon_pack_id: null
+							});
+							return 'Your icon pack is now set to default.';
+						}
+						return 'Your icon pack is already set to default.';
+					}
+
+					const pack = ItemIconPacks.find(i => i.name === icon_pack.name);
+					if (!pack) return 'Invalid icon pack.';
+
+					if (!user.user.store_bitfield.includes(pack.storeBitfield)) {
+						return 'You do not own this icon pack.';
+					}
+					await user.update({
+						icon_pack_id: pack.id
+					});
+					return `Your icon pack is now set to ${bold(pack.name)}.`;
+				}
+			}
+
 			if (toggle) {
-				return handleToggle(user, toggle.name);
+				return handleToggle(user, toggle.name, interaction);
 			}
 			if (combat_options) {
 				return handleCombatOptions(user, combat_options.action, combat_options.input);
@@ -918,7 +1283,8 @@ export const configCommand: OSBMahojiCommand = {
 					user,
 					bank_sort.sort_method,
 					bank_sort.add_weightings,
-					bank_sort.remove_weightings
+					bank_sort.remove_weightings,
+					bank_sort.reset_weightings
 				);
 			}
 			if (favorite_alchs) {
@@ -936,6 +1302,14 @@ export const configCommand: OSBMahojiCommand = {
 			if (favorite_items) {
 				return favItemConfig(user, favorite_items.add, favorite_items.remove, Boolean(favorite_items.reset));
 			}
+			if (favorite_bh_seeds) {
+				return favBhSeedsConfig(
+					user,
+					favorite_bh_seeds.add,
+					favorite_bh_seeds.remove,
+					Boolean(favorite_bh_seeds.reset)
+				);
+			}
 			if (slayer) {
 				if (slayer.autoslay) {
 					const { message } = await setDefaultAutoslay(user, slayer.autoslay);
@@ -945,6 +1319,15 @@ export const configCommand: OSBMahojiCommand = {
 					const { message } = await setDefaultSlayerMaster(user, slayer.master);
 					return message;
 				}
+			}
+			if (pin_trip) {
+				if (pin_trip.trip) {
+					return pinTripCommand(user, pin_trip.trip, pin_trip.emoji, pin_trip.custom_name);
+				}
+				if (pin_trip.unpin_trip) {
+					return unpinTripCommand(user, pin_trip.unpin_trip);
+				}
+				return 'You need to provide a trip to pin or unpin.';
 			}
 		}
 		return 'Invalid command.';

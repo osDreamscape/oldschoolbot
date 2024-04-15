@@ -1,10 +1,11 @@
 import { Canvas, SKRSContext2D } from '@napi-rs/canvas';
+import { formatItemStackQuantity, generateHexColorForCashStack } from '@oldschoolgg/toolkit';
 import { calcWhatPercent, objectEntries } from 'e';
 import { CommandResponse } from 'mahoji/dist/lib/structures/ICommand';
+import { Bank, Util } from 'oldschooljs';
 
-import { allCollectionLogs, getCollection, getTotalCl } from '../lib/data/Collections';
+import { allCollectionLogs, getCollection, getTotalCl, UserStatsDataNeededForCL } from '../lib/data/Collections';
 import { IToReturnCollection } from '../lib/data/CollectionsExport';
-import { formatItemStackQuantity, generateHexColorForCashStack, toKMB } from '../lib/util';
 import { fillTextXTimesInCtx, getClippedRegion, measureTextWidth } from '../lib/util/canvasUtil';
 import getOSItem from '../lib/util/getOSItem';
 import { IBgSprite } from './bankImage';
@@ -15,7 +16,7 @@ export const collectionLogTypes = [
 	{ name: 'bank', description: 'Owned Items Log' },
 	{ name: 'temp', description: 'Temporary Log' }
 ] as const;
-export type CollectionLogType = typeof collectionLogTypes[number]['name'];
+export type CollectionLogType = (typeof collectionLogTypes)[number]['name'];
 export const CollectionLogFlags = [
 	{ name: 'text', description: 'Show your CL in text format.' },
 	{ name: 'missing', description: 'Show only missing items.' }
@@ -104,8 +105,10 @@ class CollectionLogTask {
 		collection: string;
 		type: CollectionLogType;
 		flags: { [key: string]: string | number };
+		stats: UserStatsDataNeededForCL | null;
+		collectionLog?: IToReturnCollection;
 	}): Promise<CommandResponse> {
-		const { sprite } = bankImageGenerator.getBgAndSprite(options.user.user.bankBackground);
+		const { sprite } = bankImageGenerator.getBgAndSprite(options.user.user.bankBackground, options.user);
 
 		if (options.flags.temp) {
 			options.type = 'temp';
@@ -113,6 +116,10 @@ class CollectionLogTask {
 		let { collection, type, user, flags } = options;
 
 		let collectionLog: IToReturnCollection | undefined | false = undefined;
+
+		if (options.collectionLog) {
+			collectionLog = options.collectionLog;
+		}
 
 		if (collection) {
 			collectionLog = await getCollection({
@@ -131,7 +138,7 @@ class CollectionLogTask {
 
 		if (flags.text) {
 			return {
-				content: 'This is the items on your log:',
+				content: 'These are the items on your log:',
 				files: [
 					{
 						attachment: Buffer.from(
@@ -160,7 +167,7 @@ class CollectionLogTask {
 
 		const fullSize = flags.nl || !collectionLog.leftList;
 
-		const userTotalCl = getTotalCl(user, type);
+		const userTotalCl = getTotalCl(user, type, options.stats);
 		const leftListCanvas = this.drawLeftList(collectionLog, sprite);
 
 		let leftDivisor = 214;
@@ -191,6 +198,8 @@ class CollectionLogTask {
 				121 + (itemSize + itemSpacer) * Math.ceil(collectionLog.collectionTotal / maxPerLine)
 			)
 		);
+
+		debugLog('Generating a CL image', { collection, ...flags, type, user_id: user.id });
 
 		// Create base canvas
 		const canvas = new Canvas(canvasWidth, canvasHeight);
@@ -262,7 +271,7 @@ class CollectionLogTask {
 				i = 0;
 				y += 1;
 			}
-			const itemImage = await bankImageGenerator.getItemImage(item);
+			const itemImage = await bankImageGenerator.getItemImage(item, user);
 
 			let qtyText = 0;
 			if (!userCollectionBank.has(item)) {
@@ -376,10 +385,9 @@ class CollectionLogTask {
 				this.drawText(ctx, ' Rifts searches: ', ctx.measureText(drawnSoFar).width, pixelLevel);
 				drawnSoFar += ' Rifts searches: ';
 				ctx.fillStyle = '#FFFFFF';
-				const stats = await user.fetchStats();
 				this.drawText(
 					ctx,
-					stats.gotr_rift_searches.toLocaleString(),
+					options.stats?.gotrRiftSearches.toLocaleString() ?? '',
 					ctx.measureText(drawnSoFar).width,
 					pixelLevel
 				);
@@ -391,7 +399,7 @@ class CollectionLogTask {
 		ctx.save();
 		ctx.font = '16px OSRSFontCompact';
 		ctx.fillStyle = generateHexColorForCashStack(totalPrice);
-		let value = toKMB(totalPrice);
+		let value = Util.toKMB(totalPrice);
 		this.drawText(ctx, value, ctx.canvas.width - 15 - ctx.measureText(value).width, 75 + 25);
 		ctx.restore();
 
@@ -457,6 +465,36 @@ class CollectionLogTask {
 		return {
 			files: [{ attachment: await canvas.encode('png'), name: `${type}_log_${new Date().valueOf()}.png` }]
 		};
+	}
+
+	async makeArbitraryCLImage({
+		user,
+		title,
+		clItems,
+		userBank
+	}: {
+		user: MUser;
+		title: string;
+		clItems: number[];
+		userBank: Bank;
+	}) {
+		return this.generateLogImage({
+			user,
+			collection: '',
+			type: 'bank',
+			flags: {},
+			stats: null,
+			collectionLog: {
+				name: title,
+				collection: clItems,
+				userItems: userBank,
+				collectionTotal: clItems.length,
+				collectionObtained: clItems.filter(i => userBank.has(i)).length,
+				category: 'idk',
+				leftList: undefined,
+				counts: false
+			}
+		});
 	}
 }
 

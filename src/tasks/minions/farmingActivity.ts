@@ -1,21 +1,22 @@
 import { randInt } from 'e';
 import { Bank, Monsters } from 'oldschooljs';
 
-import { Emoji, Events } from '../../lib/constants';
-import { defaultFarmingContract, PatchTypes } from '../../lib/minions/farming';
+import { combatAchievementTripEffect } from '../../lib/combat_achievements/combatAchievements';
+import { BitField, Emoji, Events } from '../../lib/constants';
+import { PatchTypes } from '../../lib/minions/farming';
 import { FarmingContract } from '../../lib/minions/farming/types';
 import { prisma } from '../../lib/settings/prisma';
 import { calcVariableYield } from '../../lib/skilling/functions/calcsFarming';
 import Farming from '../../lib/skilling/skills/farming';
 import { SkillsEnum } from '../../lib/skilling/types';
-import { FarmingActivityTaskOptions } from '../../lib/types/minions';
-import { assert, rand, roll, skillingPetDropRate } from '../../lib/util';
+import { FarmingActivityTaskOptions, MonsterActivityTaskOptions } from '../../lib/types/minions';
+import { assert, roll, skillingPetDropRate } from '../../lib/util';
 import chatHeadImage from '../../lib/util/chatHeadImage';
 import { getFarmingKeyFromName } from '../../lib/util/farmingHelpers';
 import { handleTripFinish } from '../../lib/util/handleTripFinish';
 import { updateBankSetting } from '../../lib/util/updateBankSetting';
 import { sendToChannelID } from '../../lib/util/webhook';
-import { mahojiUsersSettingsFetch, userStatsBankUpdate } from '../../mahoji/mahojiSettings';
+import { userStatsBankUpdate } from '../../mahoji/mahojiSettings';
 
 export const farmingTask: MinionTask = {
 	type: 'Farming',
@@ -23,7 +24,6 @@ export const farmingTask: MinionTask = {
 		const { plantsName, patchType, quantity, upgradeType, payment, userID, channelID, planting, currentDate, pid } =
 			data;
 		const user = await mUserFetch(userID);
-		const mahojiUser = await mahojiUsersSettingsFetch(userID);
 		const currentFarmingLevel = user.skillLevel(SkillsEnum.Farming);
 		const currentWoodcuttingLevel = user.skillLevel(SkillsEnum.Woodcutting);
 		let baseBonus = 1;
@@ -34,8 +34,9 @@ export const farmingTask: MinionTask = {
 		let checkHealthXp = 0;
 		let rakeXp = 0;
 		let woodcuttingXp = 0;
+		let herbloreXp = 0;
 		let payStr = '';
-		let wcStr = '';
+		let wcBool = false;
 		let rakeStr = '';
 		let plantingStr = '';
 		const infoStr: string[] = [];
@@ -117,7 +118,8 @@ export const farmingTask: MinionTask = {
 
 			str += `\n${await user.addXP({
 				skillName: SkillsEnum.Farming,
-				amount: Math.floor(farmingXpReceived + bonusXP)
+				amount: Math.floor(farmingXpReceived + bonusXP),
+				duration: data.duration
 			})}`;
 
 			if (loot.length > 0) str += `\n\nYou received: ${loot}.`;
@@ -168,8 +170,16 @@ export const farmingTask: MinionTask = {
 			}
 			checkHealthXp = alivePlants * plantToHarvest.checkXp;
 
+			const shouldCleanHerb =
+				plantToHarvest.herbXp !== undefined &&
+				user.bitfield.includes(BitField.CleanHerbsFarming) &&
+				user.skillLevel(SkillsEnum.Herblore) >= plantToHarvest.herbLvl!;
+
 			if (plantToHarvest.givesCrops) {
-				if (!plantToHarvest.outputCrop) return;
+				let cropToHarvest = plantToHarvest.outputCrop;
+				if (shouldCleanHerb) {
+					cropToHarvest = plantToHarvest.cleanHerbCrop;
+				}
 				if (plantToHarvest.variableYield) {
 					cropYield = calcVariableYield(
 						plantToHarvest,
@@ -207,10 +217,18 @@ export const farmingTask: MinionTask = {
 				}
 
 				if (quantity > patchType.lastQuantity) {
-					loot.add(plantToHarvest.outputCrop, cropYield);
+					loot.add(cropToHarvest, cropYield);
 					loot.add('Weeds', quantity - patchType.lastQuantity);
 				} else {
-					loot.add(plantToHarvest.outputCrop, cropYield);
+					loot.add(cropToHarvest, cropYield);
+				}
+
+				if (shouldCleanHerb && plantToHarvest.herbXp) {
+					herbloreXp = cropYield * plantToHarvest.herbXp;
+					const uncleanedHerbLoot = new Bank().add(plantToHarvest.outputCrop, cropYield);
+					await user.addItemsToCollectionLog(uncleanedHerbLoot);
+					const cleanedHerbLoot = new Bank().add(plantToHarvest.cleanHerbCrop, cropYield);
+					await userStatsBankUpdate(user.id, 'herbs_cleaned_while_farming_bank', cleanedHerbLoot);
 				}
 
 				if (plantToHarvest.name === 'Limpwurt') {
@@ -243,15 +261,15 @@ export const farmingTask: MinionTask = {
 							typeof plantToHarvest.woodcuttingXp === 'number'
 					);
 
-					const amountOfLogs = rand(5, 10) * alivePlants;
+					const amountOfLogs = randInt(5, 10) * alivePlants;
 					loot.add(plantToHarvest.outputLogs, amountOfLogs);
 
 					if (plantToHarvest.outputRoots) {
-						loot.add(plantToHarvest.outputRoots, rand(1, 4) * alivePlants);
+						loot.add(plantToHarvest.outputRoots, randInt(1, 4) * alivePlants);
 					}
 
 					woodcuttingXp += amountOfLogs * plantToHarvest.woodcuttingXp!;
-					wcStr = ` You also received ${woodcuttingXp.toLocaleString()} Woodcutting XP.`;
+					wcBool = true;
 
 					harvestXp = 0;
 				} else if (plantToHarvest.givesCrops && chopped) {
@@ -278,13 +296,30 @@ export const farmingTask: MinionTask = {
 				plantingStr = `${user}, ${user.minionName} finished `;
 			}
 
+			bonusXP += Math.floor(farmingXpReceived * bonusXpMultiplier);
+
+			const xpRes = await user.addXP({
+				skillName: SkillsEnum.Farming,
+				amount: Math.floor(farmingXpReceived + bonusXP),
+				duration: data.duration
+			});
+			const wcXP = await user.addXP({
+				skillName: SkillsEnum.Woodcutting,
+				amount: Math.floor(woodcuttingXp)
+			});
+			await user.addXP({
+				skillName: SkillsEnum.Herblore,
+				amount: Math.floor(herbloreXp),
+				source: 'CleaningHerbsWhileFarming'
+			});
+
 			infoStr.push(
 				`${plantingStr}harvesting ${patchType.lastQuantity}x ${
 					plantToHarvest.name
-				}.${deathStr}${payStr}\n\nYou received ${plantXp.toLocaleString()} XP for planting, ${rakeStr}${harvestXp.toLocaleString()} XP for harvesting, and ${checkHealthXp.toLocaleString()} XP for checking health for a total of ${farmingXpReceived.toLocaleString()} Farming XP.${wcStr}`
+				}.${deathStr}${payStr}\n\nYou received ${plantXp.toLocaleString()} XP for planting, ${rakeStr}${harvestXp.toLocaleString()} XP for harvesting, and ${checkHealthXp.toLocaleString()} XP for checking health. In total: ${xpRes}. ${
+					wcBool ? wcXP : ''
+				}`
 			);
-
-			bonusXP += Math.floor(farmingXpReceived * bonusXpMultiplier);
 
 			if (bonusXP > 0) {
 				infoStr.push(
@@ -292,24 +327,10 @@ export const farmingTask: MinionTask = {
 				);
 			}
 
-			await user.addXP({
-				skillName: SkillsEnum.Farming,
-				amount: Math.floor(farmingXpReceived + bonusXP)
-			});
-			await user.addXP({
-				skillName: SkillsEnum.Woodcutting,
-				amount: Math.floor(woodcuttingXp)
-			});
-
-			const newFarmingLevel = user.skillLevel(SkillsEnum.Farming);
-			const newWoodcuttingLevel = user.skillLevel(SkillsEnum.Woodcutting);
-
-			if (newFarmingLevel > currentFarmingLevel) {
-				infoStr.push(`\n${user.minionName}'s Farming level is now ${newFarmingLevel}!`);
-			}
-
-			if (newWoodcuttingLevel > currentWoodcuttingLevel) {
-				infoStr.push(`\n\n${user.minionName}'s Woodcutting level is now ${newWoodcuttingLevel}!`);
+			if (herbloreXp > 0) {
+				infoStr.push(
+					`\nYou received ${herbloreXp.toLocaleString()} Herblore XP for cleaning the herbs during your trip.`
+				);
 			}
 
 			const { petDropRate } = skillingPetDropRate(user, SkillsEnum.Farming, plantToHarvest.petChance);
@@ -318,6 +339,17 @@ export const farmingTask: MinionTask = {
 				const hesporiLoot = Monsters.Hespori.kill(patchType.lastQuantity, {
 					farmingLevel: currentFarmingLevel
 				});
+				const fakeMonsterTaskOptions: MonsterActivityTaskOptions = {
+					monsterID: Monsters.Hespori.id,
+					quantity: patchType.lastQuantity,
+					type: 'MonsterKilling',
+					userID: user.id,
+					duration: data.duration,
+					finishDate: data.finishDate,
+					channelID: data.channelID,
+					id: 1
+				};
+				await combatAchievementTripEffect({ user, loot, messages: infoStr, data: fakeMonsterTaskOptions });
 				loot = hesporiLoot;
 			} else if (
 				patchType.patchPlanted &&
@@ -374,10 +406,7 @@ export const farmingTask: MinionTask = {
 				[getFarmingKeyFromName(plant.seedType)]: newPatch
 			});
 
-			const currentContract: FarmingContract | null =
-				(mahojiUser.minion_farmingContract as FarmingContract | null) ?? {
-					...defaultFarmingContract
-				};
+			const { contract: currentContract } = user.farmingContract();
 
 			const { contractsCompleted } = currentContract;
 

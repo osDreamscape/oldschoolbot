@@ -1,8 +1,12 @@
+import { formatOrdinal } from '@oldschoolgg/toolkit';
 import { Bank, LootTable, Openables } from 'oldschooljs';
-import { Item } from 'oldschooljs/dist/meta/types';
+import { SkillsEnum } from 'oldschooljs/dist/constants';
+import { Item, OpenableOpenOptions } from 'oldschooljs/dist/meta/types';
 import { Mimic } from 'oldschooljs/dist/simulation/misc';
+import BrimstoneChest, { BrimstoneChestOpenable } from 'oldschooljs/dist/simulation/openables/BrimstoneChest';
 import { HallowedSackTable } from 'oldschooljs/dist/simulation/openables/HallowedSack';
 import { Implings } from 'oldschooljs/dist/simulation/openables/Implings';
+import LarransChest, { LarransChestOpenable } from 'oldschooljs/dist/simulation/openables/LarransChest';
 
 import { ClueTiers } from './clues/clueTiers';
 import { Emoji, Events, MIMIC_MONSTER_ID } from './constants';
@@ -20,7 +24,6 @@ import {
 import { openSeedPack } from './skilling/functions/calcFarmingContracts';
 import { ItemBank } from './types';
 import { itemID, roll } from './util';
-import { formatOrdinal } from './util/formatOrdinal';
 import getOSItem from './util/getOSItem';
 import resolveItems from './util/resolveItems';
 
@@ -34,6 +37,29 @@ const CacheOfRunesTable = new LootTable()
 	.add(
 		new LootTable().add('Death rune', [2800, 3600]).add('Soul rune', [2800, 3600]).add('Blood rune', [2800, 3600])
 	);
+
+const FrozenCacheTable = new LootTable()
+	.tertiary(250, 'Ancient icon')
+	.tertiary(500, 'Venator shard')
+	.add('Ancient essence', [1970, 2060], 4)
+	.add('Ancient essence', [540, 599], 10)
+	.add('Chaos rune', 480, 5)
+	.add('Rune platelegs', 3, 5)
+	.add("Black d'hide body", 1, 5)
+	.add('Fire rune', 1964, 5)
+	.add('Cannonball', 666, 5)
+	.add('Dragon plateskirt', 1, 5)
+	.add('Torstol seed', 4, 5)
+	.add('Coal', 163, 5)
+	.add('Snapdragon seed', 5, 4)
+	.add('Dragon platelegs', 2, 4)
+	.add('Runite ore', 18, 3)
+	.add('Grimy toadflax', 55, 3)
+	.add('Limpwurt root', 21, 3)
+	.add('Ranarr seed', 8, 3)
+	.add('Silver ore', 101, 2)
+	.add('Spirit seed', 1, 2)
+	.add('Rune sword');
 
 interface OpenArgs {
 	quantity: number;
@@ -85,21 +111,30 @@ for (const clueTier of ClueTiers) {
 				mimicNumber > 0 ? `with ${mimicNumber} mimic${mimicNumber > 1 ? 's' : ''}` : ''
 			}`;
 
-			const nthCasket = ((user.user.openable_scores as ItemBank)[clueTier.id] ?? 0) + quantity;
+			const stats = await user.fetchStats({ openable_scores: true });
+			const nthCasket = ((stats.openable_scores as ItemBank)[clueTier.id] ?? 0) + quantity;
 
+			let gotMilestoneReward = false;
 			// If this tier has a milestone reward, and their new score meets the req, and
 			// they don't own it already, add it to the loot.
 			if (
 				clueTier.milestoneReward &&
 				nthCasket >= clueTier.milestoneReward.scoreNeeded &&
-				user.allItemsOwned().amount(clueTier.milestoneReward.itemReward) === 0
+				user.allItemsOwned.amount(clueTier.milestoneReward.itemReward) === 0
 			) {
-				loot.add(clueTier.milestoneReward.itemReward);
+				await user.addItemsToBank({
+					items: new Bank().add(clueTier.milestoneReward.itemReward),
+					collectionLog: true
+				});
+				gotMilestoneReward = true;
 			}
 
 			// Here we check if the loot has any ultra-rares (3rd age, gilded, bloodhound),
 			// and send a notification if they got one.
 			const announcedLoot = loot.filter(i => clueItemsToNotifyOf.includes(i.id), false);
+			if (gotMilestoneReward) {
+				announcedLoot.add(clueTier.milestoneReward!.itemReward);
+			}
 			if (announcedLoot.length > 0) {
 				globalClient.emit(
 					Events.ServerNotification,
@@ -130,7 +165,20 @@ const osjsOpenables: UnifiedOpenable[] = [
 		id: 23_083,
 		openedItem: getOSItem(23_083),
 		aliases: ['brimstone chest', 'brimstone'],
-		output: Openables.BrimstoneChest.table,
+		output: async (
+			args: OpenArgs
+		): Promise<{
+			bank: Bank;
+		}> => {
+			const chest = new BrimstoneChestOpenable(BrimstoneChest);
+			const fishLvl = args.user.skillLevel(SkillsEnum.Fishing);
+			const brimstoneOptions: OpenableOpenOptions = {
+				fishLvl
+			};
+			const openLoot: Bank = chest.open(args.quantity, brimstoneOptions);
+
+			return { bank: openLoot };
+		},
 		allItems: Openables.BrimstoneChest.table.allItems
 	},
 	{
@@ -202,7 +250,21 @@ const osjsOpenables: UnifiedOpenable[] = [
 			'larrans small chest',
 			"larran's small chest"
 		],
-		output: Openables.LarransChest.table,
+		output: async (
+			args: OpenArgs
+		): Promise<{
+			bank: Bank;
+		}> => {
+			const chest = new LarransChestOpenable(LarransChest);
+			const fishLvl = args.user.skillLevel(SkillsEnum.Fishing);
+			const larransOptions: OpenableOpenOptions = {
+				fishLvl,
+				chestSize: 'big'
+			};
+			const openLoot: Bank = chest.open(args.quantity, larransOptions);
+
+			return { bank: openLoot };
+		},
 		allItems: Openables.LarransChest.table.allItems
 	},
 	{
@@ -283,12 +345,20 @@ const osjsOpenables: UnifiedOpenable[] = [
 		allItems: Openables.SinisterChest.table.allItems
 	},
 	{
-		name: 'Ore pack',
+		name: "Ore pack (Giant's Foundry)",
 		id: 27_019,
 		openedItem: getOSItem(27_019),
-		aliases: ['ore pack'],
-		output: Openables.OrePack.table,
-		allItems: Openables.OrePack.table.allItems
+		aliases: ["ore pack (giant's foundry)", 'giants', 'foundry', 'giants foundry'],
+		output: Openables.GiantsFoundryOrePack.table,
+		allItems: Openables.GiantsFoundryOrePack.table.allItems
+	},
+	{
+		name: 'Ore pack (Volcanic Mine)',
+		id: 27_693,
+		openedItem: getOSItem(27_693),
+		aliases: ['ore pack (volcanic mine)', 'volcanic', 'volcanic mine'],
+		output: Openables.VolcanicMineOrePack.table,
+		allItems: Openables.VolcanicMineOrePack.table.allItems
 	},
 	{
 		name: 'Intricate pouch',
@@ -367,6 +437,15 @@ export const allOpenables: UnifiedOpenable[] = [
 		allItems: resolveItems(['Tokkul', 'Lava scale shard', 'Onyx bolt tips'])
 	},
 	{
+		name: 'Scaly blue dragonhide',
+		id: 27_897,
+		openedItem: getOSItem('Scaly blue dragonhide'),
+		aliases: ['Scaly blue dragonhide'],
+		output: new LootTable().add('Blue dragon scale', 50),
+		emoji: Emoji.Casket,
+		allItems: resolveItems(['Blue dragon scale'])
+	},
+	{
 		name: 'Spoils of war',
 		id: itemID('Spoils of war'),
 		openedItem: getOSItem('Spoils of war'),
@@ -390,6 +469,14 @@ export const allOpenables: UnifiedOpenable[] = [
 		output: CacheOfRunesTable,
 		allItems: CacheOfRunesTable.allItems
 	},
+	{
+		name: 'Frozen cache',
+		id: itemID('Frozen cache'),
+		openedItem: getOSItem('Frozen cache'),
+		aliases: ['frozen cache'],
+		output: FrozenCacheTable,
+		allItems: FrozenCacheTable.allItems
+	},
 	...clueOpenables,
 	...osjsOpenables,
 	...shadeChestOpenables
@@ -401,3 +488,17 @@ for (const openable of allOpenables) {
 }
 
 export const allOpenablesIDs = new Set(allOpenables.map(i => i.id));
+
+export function getOpenableLoot({
+	openable,
+	quantity,
+	user
+}: {
+	openable: UnifiedOpenable;
+	quantity: number;
+	user: MUser;
+}) {
+	return openable.output instanceof LootTable
+		? { bank: openable.output.roll(quantity), message: null }
+		: openable.output({ user, self: openable, quantity });
+}
